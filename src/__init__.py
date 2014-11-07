@@ -264,9 +264,14 @@ class ProcessList(object):
         to the specified message type
         '''
         try:
-            return list(self.listening[m_type])
+            parent_listeners=self.__get_listeners(m_type.mro()[1])
+        except IndexError:
+            parent_listeners=[]
+        try:
+            this_listeners=self.listening[m_type]
         except KeyError:
-            return list()
+            this_listeners=[]
+        return parent_listeners+this_listeners
 
     def send_object(self, target_id, message):
         '''
@@ -305,7 +310,7 @@ class ProcessList(object):
                 ids.append(p[0].m_id)
         return ids
 
-    def __handle_message(self, m, loggerId, prntHandler, objHandler):
+    def __handle_message(self, m, prntHandler, objHandler):
         '''
         Handle a message received by the supervisor.
 
@@ -339,10 +344,6 @@ class ProcessList(object):
             else:
                 # Message targetted at some other Process
                 self.send(m)
-                if loggerId:
-                    logm=copy.copy(m)
-                    logm.target=loggerId
-                    self.send(logm)
         else:
             # Not a Message type
             if objHandler:
@@ -351,7 +352,7 @@ class ProcessList(object):
                 raise SupervisorException("Unknown object sent to supervisor: {0}".format(m))
         return 1
 
-    def supervise(self, interval=0.1, loggerId=None, prntHandler=None, finishHandler=None, objHandler=None, warn=True):
+    def supervise(self, interval=0.1, prntHandler=None, finishHandler=None, objHandler=None, warn=True):
         '''
         Supervisor function to handle running the processes in parallel.
         Automates starting processes, handling messsages, and waiting
@@ -359,8 +360,6 @@ class ProcessList(object):
 
         Options:
         interval      - How often to check for messages; default 0.1s
-        loggerId      - Optional id for a logger Process that gets an additional
-                        copy of any messages sent to sister Processes.
         finishHandler - Optional callable that gets called once everything has
                         terminated
         prntHandler   - Optional callable that gets called whenever a
@@ -402,17 +401,15 @@ this class's output Queue will not be received.
                 except KeyError:
                     self.listening[type_]=[p[2]]
 
-        if loggerId:
-            self.send_object(loggerId, LoggerProcessesMessage( [ (p[0].M_NAME, p[0].m_id) for p in self.processes ] ) )
         self.start()
-        while self.__sup_is_alive(loggerId=loggerId):
+        while self.__sup_is_alive():
             self.join(interval)
             try:
                 while True:
                     m=self.get_message(block=False)
                     try:
                         if not self.__handle_message(
-                          m, loggerId, prntHandler, objHandler
+                          m, prntHandler, objHandler
                         ):
                             self.stop()
                             loggerid=None
@@ -420,13 +417,13 @@ this class's output Queue will not be received.
                         print "ERROR: Supervisor; Invalid message received; {0}:\n{1}".format(str(m),str(e))
             except Queue.Empty:
                 pass
-        if loggerId:
-            # Quit the logger - nothing more to be done
-            self.send(LoggerTermMessage(loggerId))
+        for p in self.processes:
+            if p[0].RESIDENT:
+                self.send(ResidentTermMessage(p[0].m_id))
         if finishHandler != None:
             finishHandler()
 
-    def __sup_is_alive(self,loggerId=None):
+    def __sup_is_alive(self):
         '''
         Superviser method to see if all processes (except the logger) have
         finished naturally (either through error or just finishing their op
@@ -438,7 +435,7 @@ this class's output Queue will not be received.
         alive=False
         for p in self.processes:
             if p[0].is_alive():
-                if p[0].m_id != loggerId:
+                if p[0].RESIDENT == False:
                     alive=True
             else:
                 p=(p[0],None,None)
@@ -457,7 +454,9 @@ class Process(multiprocessing.Process):
     get them back in the originating process by using a message handler passed
     to ProcessList.supervise(messageHandler=lambda:pass)
     '''
+    # M_NAME = "Set this to give your thing a name"
     LISTEN_TO=[]
+    RESIDENT=False
 
     def __init__(self, *args, **kwargs):
         if type(self) is Process:
@@ -671,22 +670,17 @@ class Process(multiprocessing.Process):
         '''
         raise NotImplementedError('This method is an example that should be overridden')
 
-class LoggerTermMessage(EmptyMessage):
+class ResidentTermMessage(EmptyMessage):
     pass
 
-class LoggerProcessesMessage(EmptyMessage):
-    def __init__(self,processmap):
-        self.processmap=processmap
-        super(LoggerProcessesMessage, self)
-
 class Logger(Process):
+    RESIDENT=True
+
     def op(self):
         while True:
             m=self.input.get(block=True)
-            if isinstance(m, LoggerTermMessage):
+            if isinstance(m, ResidentTermMessage):
                 break
-            elif isinstance(m, LoggerProcessesMessage):
-                self.show_names(m.processmap)
             else:
                 self.log(m)
 
@@ -698,15 +692,11 @@ class Logger(Process):
 
 class DebugLogger(Logger):
     M_NAME="Debug Logger"
-    def show_names(self, pm):
-        print "The following processes are registered"
-        for p in pm:
-            print "  ", p
-            
     def log(self, m):
         print m
 
 ### Test code ############################################################
+# TODO: Use multiprocessing.Value (or possibly Array) to share state between test code and parent
 
 import unittest, time
 
@@ -949,7 +939,7 @@ class TestProcessList(unittest.TestCase):
         prntProxy = lambda m: handler.prntHandler(m)
         finishedProxy = lambda: handler.finishedHandler()
         objProxy = lambda m: handler.objHandler(m)
-        self.p.supervise(TestProcessList.tick/4.0,None,prntProxy,finishedProxy,objProxy,warn=False)
+        self.p.supervise(TestProcessList.tick/4.0,prntProxy,finishedProxy,objProxy,warn=False)
         self.assertTrue(handler.passed)
         # Note: Not testing warner automatically
         # Note transparent exception raising is tested in TestProcess.testOP()
@@ -1001,7 +991,7 @@ class TestProcessList(unittest.TestCase):
                 if type(m) == Test_Handshake_reply:
                     self.assertFalse(self_.messaged)
                     self_.messaged=True # Ensure this is only messaged once
-                elif type(m) == LoggerTermMessage:
+                elif type(m) == ResidentTermMessage:
                     # Finish
                     self.assertTrue(self_.messaged)
                     self_.running=False
@@ -1022,7 +1012,7 @@ class TestProcessList(unittest.TestCase):
                 if isinstance(m, StringMessage):
                     self.assertEqual(m.message,'Test message')
                     self_.messaged=True
-                elif isinstance(m, LoggerTermMessage):
+                elif isinstance(m, ResidentTermMessage):
                     self.assertTrue(self_.messaged)
                     self_.running=False
 
@@ -1037,9 +1027,9 @@ class TestProcessList(unittest.TestCase):
 
             def op(self):
                 self.send(1, Test_Handshake_reply)
-                self.send(1, StringMessage, "Test message")
+                self.send(1, InputResponseMessage, "Test message")
                 self.send(1, EmptyMessage) # Should get sent to no one
-                self.send(0, LoggerTermMessage)
+                self.send(0, ResidentTermMessage)
 
         pl=ProcessList()
         pl.add(TestL1())
@@ -1078,16 +1068,18 @@ class TestProcessList(unittest.TestCase):
 
         class logger(Process):
             M_NAME="Logger"
+            LISTEN_TO=[EmptyMessage]
+            RESIDENT=True
             def op(self):
-                self.messagetypes=[LoggerProcessesMessage, Test_Handshake_init, Test_Handshake_reply]
+                self.messagetypes=[Test_Handshake_init, Test_Handshake_reply]
                 self.messageindex=0
                 while self.messageindex<len(self.messagetypes):
                     self.receive(block=True)
 
-            def handle_message(opself, m):
-                self.assertLess(opself.messageindex, len(opself.messagetypes))
-                self.assertEqual(type(m),opself.messagetypes[opself.messageindex])
-                opself.messageindex=opself.messageindex+1
+            def handle_message(self_, m):
+                self.assertLess(self_.messageindex, len(self_.messagetypes))
+                self.assertEqual(type(m),self_.messagetypes[self_.messageindex])
+                self_.messageindex=self_.messageindex+1
 
         message={'val':None}
         def testHandler(m):
@@ -1100,9 +1092,8 @@ class TestProcessList(unittest.TestCase):
         pl.add(agent_one())
         pl.add(agent_two())
         pl.add(logger())
-        logid=pl.get_ids("Logger")[0]
         #pdb.set_trace()
-        pl.supervise(loggerId=logid,prntHandler=testHandler)
+        pl.supervise(prntHandler=testHandler)
         self.assertEqual(message['val'],"Test OK!")
 
 class TestProcess(unittest.TestCase):
