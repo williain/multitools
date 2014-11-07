@@ -134,6 +134,7 @@ class ProcessList(object):
     def __init__(self):
         self.m_id=hex(id(self))
         self.processes=[]
+        self.listening=dict()
 
     def add(self, process):
         '''
@@ -144,6 +145,7 @@ class ProcessList(object):
         '''
         process.m_id="{0}_{1}".format(self.m_id, str(len(self.processes)+1))
         process.sup_id=self.m_id
+
         record=[process,None,None]
         if hasattr(process, 'set_output'):
             record[1]=multiprocessing.Queue()
@@ -151,6 +153,14 @@ class ProcessList(object):
         if hasattr(process, 'set_input'):
             record[2]=multiprocessing.Queue()
             process.set_input(record[2])
+
+        if hasattr(process, 'LISTEN_TO'):
+            for type_ in process.LISTEN_TO:
+                try:
+                    self.listening[type_].add(record[2])
+	        except KeyError:
+                    self.listening[type_]=set([record[2]])
+
         self.processes.append(tuple(record))
         return record[2]
 
@@ -243,35 +253,43 @@ class ProcessList(object):
             # Block is false
             return self.__get_all(block)
 
-    def __get_inpt(self, m_source):
+    def __get_inpt(self, target):
         '''
         Get the one input queue from the process which matches the
-        specified id, or get all input queues if m_source==0
+        specified id, or get all input queues if target==0 (or none
+        if target==1, as that's a message only to listeners)
         Raises:
             ValueError - If the requested id was not found
         '''
-        i=[]
-        for p in self.processes:
-            if p[2] and (p[0].m_id == m_source or m_source==0):
-                i.append(p[2])
-        if len(i)==0:
-            raise ValueError("No process found with id '{0}'".format(m_source))
-        return i
+        if target==1:
+            return set()
+        elif target==0:
+            return {p[2] for p in self.processes if p[2]}
+        else:
+            i={p[2] for p in self.processes if p[2] and p[0].m_id==target}
+            if len(i)==0:
+                raise ValueError(
+                  "No process found with id '{0}'".format(target)
+                )
+            return i
 
     def __get_listeners(self, m_type):
         '''
         Return the list of input queues for the processes which listen
         to the specified message type
         '''
+	if m_type == IdsReplyMessage:
+            # Don't send IdsReplyMessage to listeners that didn't ask for it
+            return set()
         try:
             parent_listeners=self.__get_listeners(m_type.mro()[1])
         except IndexError:
-            parent_listeners=[]
+            parent_listeners=set()
         try:
             this_listeners=self.listening[m_type]
         except KeyError:
-            this_listeners=[]
-        return parent_listeners+this_listeners
+            this_listeners=set()
+        return parent_listeners | this_listeners
 
     def send_object(self, target_id, message):
         '''
@@ -282,10 +300,9 @@ class ProcessList(object):
                                   running processes
         '''
         try:
-            if target_id != 1:
-                inpts = self.__get_inpt(target_id)
-            else:
-                inpts = self.__get_listeners(type(message))
+            inpts = self.__get_inpt(target_id) | self.__get_listeners(
+              type(message)
+            )
             for i in inpts:
                 if i:
                     i.put(message)
@@ -329,7 +346,7 @@ class ProcessList(object):
                         self.send(InputResponseMessage(m.source, s))
                     elif isinstance(m, GetIdsMessage):
                         ids = self.get_ids(m.name)
-                        # ids may be empty list if no matches
+                        # ids may be the empty set if no matches
                         self.send(IdsReplyMessage(m.source, ids))
                     else:
                         raise SupervisorException("Unknown query message type {0}".format(type(m)))
@@ -393,14 +410,6 @@ class ProcessList(object):
 WARNING: Messages from standard multiprocessing.Process objects that don't use
 this class's output Queue will not be received.
 """
-        self.listening=dict()
-        for p in self.processes:
-            for type_ in p[0].LISTEN_TO:
-                try:
-                    self.listening[type_].append(p[2])
-                except KeyError:
-                    self.listening[type_]=[p[2]]
-
         self.start()
         while self.__sup_is_alive():
             self.join(interval)
@@ -540,7 +549,7 @@ class Process(multiprocessing.Process):
 
     def get_ids(self, name, block=True, sleep=0.5):
         '''
-        Get the list of ids which correspond to the process name supplied.
+        Get the set of ids which correspond to the process name supplied.
 
         Note this function blocks by default, waiting for a response from the
         supervisor.
@@ -558,7 +567,7 @@ class Process(multiprocessing.Process):
         receiving messages versus CPU load by reducing or increasing the sleep
         value respectively.
 
-        If an invalid name is given, you will receive back the empty list '[]'
+        If an invalid name is given, you will receive back the empty set
         '''
         if not name in self.ids:
             self.receive_all()
@@ -566,7 +575,7 @@ class Process(multiprocessing.Process):
                 self.send(self.sup_id, GetIdsMessage, self.m_id, name)
                 self.queries.append(name)
                 if block==False:
-                    return []
+                    return set()
                 else:
                     while not name in self.ids:
                         self.receive(sleep=sleep)
