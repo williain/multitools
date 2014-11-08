@@ -131,6 +131,10 @@ class ProcessList(object):
     objects and apply functions like start(), join() to them all, as well as
     supervisor functions to automate passing messages between processes
     '''
+    # Constants for non-specific target ids
+    BROADCAST=0 #: Send to all processes
+    LISTENERS=1 #: Send to none except those listeneing for this message type
+
     def __init__(self):
         self.m_id=hex(id(self))
         self.processes=[]
@@ -256,14 +260,14 @@ class ProcessList(object):
     def __get_inpt(self, target):
         '''
         Get the one input queue from the process which matches the
-        specified id, or get all input queues if target==0 (or none
-        if target==1, as that's a message only to listeners)
+        specified id, or get all input queues if target==BROADCAST (or none
+        if target==LISTENERS, as that's a message only to listeners)
         Raises:
             ValueError - If the requested id was not found
         '''
-        if target==1:
+        if target==ProcessList.LISTENERS:
             return set()
-        elif target==0:
+        elif target==ProcessList.BROADCAST:
             return {p[2] for p in self.processes if p[2]}
         else:
             i={p[2] for p in self.processes if p[2] and p[0].m_id==target}
@@ -293,8 +297,8 @@ class ProcessList(object):
 
     def send_object(self, target_id, message):
         '''
-        Send a Message object to the targetted process, or a broadcast message
-        if target_id==0, for processes that are managed by this supervisor
+        Send a Message object to the targetted process, for processes that
+        are managed by this supervisor
         Raises:
             SupervisorException - If the target_id doesn't match any of the
                                   running processes
@@ -702,7 +706,7 @@ class Logger(Process):
 class DebugLogger(Logger):
     M_NAME="Debug Logger"
     def log(self, m):
-        print m
+        self.prnt(m)
 
 ### Test code ############################################################
 # TODO: Use multiprocessing.Value (or possibly Array) to share state between test code and parent
@@ -790,7 +794,7 @@ class TestProcessList(unittest.TestCase):
 
         def op(self):
             time.sleep(TestProcessList.tick)
-            self.send(0,StringMessage,"Go go go!")
+            self.send(ProcessList.BROADCAST, StringMessage, "Go go go!")
 
     # Schedule reference:
     # -1 ticks - job_starter starts
@@ -841,7 +845,7 @@ class TestProcessList(unittest.TestCase):
     def test_send_object(self):
         self.p.add_list([self.j1, self.j3])
         self.p.start()
-        self.p.send_object(0, StringMessage(None, "Ok, go!"))
+        self.p.send_object(ProcessList.BROADCAST, StringMessage(None, "Ok, go!"))
         self.assertEqual(str(self.p.get_message()),"Starting job one")
         self.assertEqual(str(self.p.get_message(timeout=2)),"Starting job 3")
         self.assertEqual(str(self.p.get_message()),"Finished job one")
@@ -863,7 +867,7 @@ class TestProcessList(unittest.TestCase):
     def test_join(self):
         self.p.add_list([self.j2, self.j1])
         self.p.start()
-        self.p.send_object(0, StringMessage(None, "Ok, go!"))
+        self.p.send_object(ProcessList.BROADCAST, StringMessage(None, "Ok, go!"))
         self.j2i.put("Right, you too!")
         self.p.join()
         self.assertEqual(str(self.p.get_message()),"Starting job one")
@@ -1035,10 +1039,10 @@ class TestProcessList(unittest.TestCase):
             M_NAME='Test Server'
 
             def op(self):
-                self.send(1, Test_Handshake_reply)
-                self.send(1, InputResponseMessage, "Test message")
-                self.send(1, EmptyMessage) # Should get sent to no one
-                self.send(0, ResidentTermMessage)
+                self.send(ProcessList.LISTENERS, Test_Handshake_reply)
+                self.send(ProcessList.LISTENERS, InputResponseMessage, "Test message")
+                self.send(ProcessList.LISTENERS, EmptyMessage) # Should get sent to no one
+                self.send(ProcessList.BROADCAST, ResidentTermMessage)
 
         pl=ProcessList()
         pl.add(TestL1())
