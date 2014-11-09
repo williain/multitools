@@ -6,10 +6,8 @@ Multitools
 A utility class providing you tools to work with multiple multiprocessing
 Process objects and to pass messages between them.
 '''
-# TODO: Use collections.deque for query list in Process?
-# TODO: Investigate using a duplex Pipe rather that two Queues
 
-import multiprocessing, pickle, Queue, sys, traceback, copy
+import multiprocessing, pickle, Queue, sys, traceback, copy, collections
 #import pdb # For debugging
 
 class SupervisorException(Exception):
@@ -144,38 +142,35 @@ class ProcessList(object):
         '''
         Add a Process to be later start()ed or supervise()d
 
-        Process subclasses which have set_input() and set_output() functions
-        will have their inputs and outputs configured for use by the supervisor
+        Process subclasses which has the set_pipe() function will have their
+        pipe configured for use by the supervisor
         '''
         process.m_id="{0}_{1}".format(self.m_id, str(len(self.processes)+1))
         process.sup_id=self.m_id
 
-        record=[process,None,None]
-        if hasattr(process, 'set_output'):
-            record[1]=multiprocessing.Queue()
-            process.set_output(record[1])
-        if hasattr(process, 'set_input'):
-            record[2]=multiprocessing.Queue()
-            process.set_input(record[2])
+        record=[process,None]
+        if hasattr(process, 'set_pipe'):
+            (record[1],remote)=multiprocessing.Pipe()
+            process.set_pipe(remote)
 
         if hasattr(process, 'LISTEN_TO'):
             for type_ in process.LISTEN_TO:
                 try:
-                    self.listening[type_].add(record[2])
-	        except KeyError:
-                    self.listening[type_]=set([record[2]])
+                    self.listening[type_].add(record[1])
+                except KeyError:
+                    self.listening[type_]=set([record[1]])
 
         self.processes.append(tuple(record))
-        return record[2]
+        return record[1]
 
     def add_list(self, processes):
         '''
         Add a list of Processes to be later start()ed
         '''
-        inputs=[]
+        pipes=[]
         for p in processes:
-            inputs.append(self.add(p))
-        return inputs
+            pipes.append(self.add(p))
+        return pipes
 
     def start(self):
         '''
@@ -214,22 +209,12 @@ class ProcessList(object):
 
     # Supervisor-type functions - Inter-process communication
 
-    def __get_all(self, block, timeout=None):
-        for p in self.processes:
-            try:
-                out=p[1]
-                if out!=None:
-                    return out.get(block=block,timeout=timeout)
-            except Queue.Empty:
-                pass
-        raise Queue.Empty("No processes produced an output")
-
     def get_message(self, block=True, timeout=None):
         '''
         Scan the processes for output.
         Options:
             block - Block until output is given.  If False, raises Queue.Empty
-                    if no processes have raised output, and disregard timeout.
+                    if no processes have raised output, and disregards timeout.
             timeout - If block is True, wait per timeout, and raise Queue.Empty
                       only if all processes provided no output during this time.
         Raises:
@@ -238,26 +223,27 @@ class ProcessList(object):
         Returns:
             The message sent (normally expected to be a Message object)
         '''
-        if block:
-            if timeout:
-                poll_time=timeout/len(self.processes)/10.0
-                for i in range(1,10):
-                    try:
-                        return self.__get_all(block, poll_time)
-                    except Queue.Empty:
-                        pass
-                raise Queue.Empty("No processes returned an output")
-            else:
-                while True:
-                    try:
-                        return self.__get_all(block, 0.1)
-                    except Queue.Empty:
-                        pass
+        connections={p[1] for p in self.processes if p[1]}
+        if block and timeout:
+            poll_time=timeout/len(connections)/10.0
+            for i in range(1,10):
+                for c in connections:
+                    if c.poll(poll_time):
+                        return c.recv()
+            raise Queue.Empty("No processes sent a message")
+        elif block:
+            while True:
+                for c in connections:
+                    if c.poll():
+                        return c.recv()
         else:
             # Block is false
-            return self.__get_all(block)
+            for c in connections:
+                if c.poll():
+                    return c.recv()
+            raise Queue.Empty("No processes sent a message")
 
-    def __get_inpt(self, target):
+    def __get_conn(self, target):
         '''
         Get the one input queue from the process which matches the
         specified id, or get all input queues if target==BROADCAST (or none
@@ -268,9 +254,9 @@ class ProcessList(object):
         if target==ProcessList.LISTENERS:
             return set()
         elif target==ProcessList.BROADCAST:
-            return {p[2] for p in self.processes if p[2]}
+            return {p[1] for p in self.processes if p[1]}
         else:
-            i={p[2] for p in self.processes if p[2] and p[0].m_id==target}
+            i={p[1] for p in self.processes if p[1] and p[0].m_id==target}
             if len(i)==0:
                 raise ValueError(
                   "No process found with id '{0}'".format(target)
@@ -282,7 +268,7 @@ class ProcessList(object):
         Return the list of input queues for the processes which listen
         to the specified message type
         '''
-	if m_type == IdsReplyMessage:
+        if m_type == IdsReplyMessage:
             # Don't send IdsReplyMessage to listeners that didn't ask for it
             return set()
         try:
@@ -304,12 +290,12 @@ class ProcessList(object):
                                   running processes
         '''
         try:
-            inpts = self.__get_inpt(target_id) | self.__get_listeners(
+            conns = self.__get_conn(target_id) | self.__get_listeners(
               type(message)
             )
-            for i in inpts:
-                if i:
-                    i.put(message)
+            for c in conns:
+                if c:
+                    c.send(message)
         except ValueError as e:
             raise SupervisorException("Not able to send message to process; unknown id '{0}'; message was '{1}'".format(target_id, message))
 
@@ -407,7 +393,7 @@ class ProcessList(object):
         if warn:
             warning=False
             for p in self.processes:
-                if not hasattr(p[0], 'set_output'):
+                if not hasattr(p[0], 'set_pipe'):
                     warning=True
             if warning:
                 print """
@@ -463,9 +449,9 @@ class Process(multiprocessing.Process):
     deem fit.  Then instantiate it, passing in the values for those arguments
     and pass the object to ProcessList.add() or add_list().
 
-    To implement message passing, write messages using self.output.put() and
+    To implement message passing, write messages using self.pipe.send() and
     get them back in the originating process by using a message handler passed
-    to ProcessList.supervise(messageHandler=lambda:pass)
+    to ProcessList.supervise(messageHandler=lambda:pass) TODO out of date?
     '''
     # M_NAME = "Set this to give your thing a name"
     LISTEN_TO=[]
@@ -477,23 +463,16 @@ class Process(multiprocessing.Process):
         else:
             if not hasattr(self, 'M_NAME'):
                 print "WARNING: Must set a string 'M_NAME' for your Process"
-            self.queries=[]
+            self.queries=collections.deque()
             self.ids={}
             super(Process, self).__init__(target=self.wrap_op,args=args,kwargs=kwargs)
 
-    def set_output(self, output):
+    def set_pipe(self, pipe):
         '''
-        Setter for this process's output Queue.  Mostly for use by
+        Setter for this process's input/output Pipe.  Mostly for use by
         ProcessList, so it can poll for messages
         '''
-        self.output=output
-
-    def set_input(self, inpt):
-        '''
-        Setter for this process's input Queue.  Only used by ProcessList
-        for various supervisor replies.
-        '''
-        self.input=inpt
+        self.pipe=pipe
 
     def send(self, target_ids, m_type, *args):
         '''
@@ -517,7 +496,7 @@ class Process(multiprocessing.Process):
             except TypeError:
                 print "Instantiation error; {0}{1}".format(m_type.__name__,(t,)+args)
                 raise
-            self.output.put(m)
+            self.pipe.send(m)
 
         if len(target_ids)==0:
             raise IndexError("{0} not sent to no targets! Args:{1}".format(m_type.__name__, str(args)))
@@ -543,9 +522,9 @@ class Process(multiprocessing.Process):
         process, and blocks this function call too (although handle_message
         will be invoked for any messages received while blocking).
         '''
-        self.output.put(InputMessage(self.sup_id,self.m_id,prompt))
+        self.pipe.send(InputMessage(self.sup_id,self.m_id,prompt))
         while True:
-            m=self.input.get()
+            m=self.pipe.recv()
             if isinstance(m,InputResponseMessage):
                 return str(m)
             else:
@@ -599,11 +578,11 @@ class Process(multiprocessing.Process):
             try:
                 (_, _, tb) = sys.exc_info()
                 e.args=(e.args[:-1])+(str(e.args[-1])+"\nOriginal traceback:\n"+"".join(traceback.format_tb(tb)),)
-                self.output.put(ExceptionMessage(self.sup_id, self.m_id, e))
+                self.pipe.send(ExceptionMessage(self.sup_id, self.m_id, e))
             except Exception:
-                self.output.put(crash)
-        self.output.close()
-        self.output.join_thread()
+                self.pipe.send(crash)
+        self.pipe.close()
+        #self.pipe.join_thread()
 
     def receive(self, block=True, sleep=0.5):
         '''
@@ -620,17 +599,15 @@ class Process(multiprocessing.Process):
         Raises:
           Queue.Empty - If not blocking, and no messages are queued.
         '''
-        while True:
-            m=None
-            try:
-                m=self.input.get(block=False)
-                self.__handle_message(m)
-                break
-            except Queue.Empty:
-                if block:
-                    time.sleep(sleep)
-                else:
-                    raise
+        if block:
+            while not self.pipe.poll():
+                time.sleep(sleep)
+            self.__handle_message(self.pipe.recv())
+        else:
+            if self.pipe.poll():
+                self.__handle_message(self.pipe.recv())
+            else:
+                raise Queue.Empty()
 
     def receive_all(self):
         '''
@@ -646,7 +623,7 @@ class Process(multiprocessing.Process):
     def __handle_message(self, m):
         if isinstance(m, IdsReplyMessage):
             try:
-                name=self.queries.pop(0)
+                name=self.queries.popleft()
                 self.ids[name]=m.ids
             except IndexError:
                 raise SupervisorException(
@@ -691,14 +668,11 @@ class Logger(Process):
 
     def op(self):
         while True:
-            m=self.input.get(block=True)
+            m=self.pipe.recv()
             if isinstance(m, ResidentTermMessage):
                 break
             else:
                 self.log(m)
-
-        def show_names(self, processmap):
-            pass
 
         def log(self, m):
             raise NotImplementedError('This log() method is an example that should be overridden')
@@ -822,25 +796,23 @@ class TestProcessList(unittest.TestCase):
         self.assertEqual(self.p.processes,[])
 
     def test_add(self):
-        self.assertTrue(isinstance(self.p.add(self.j1), type(multiprocessing.Queue())))
+        self.assertTrue(hasattr(self.p.add(self.j1), "poll"))
         self.assertTrue(isinstance(self.p.add(self.j2), type(None)))
         self.assertEqual(len(self.p.processes),2)
         self.assertEqual(self.p.processes[0][0], self.j1)
-        self.assertTrue(isinstance(self.p.processes[0][1], type(multiprocessing.Queue())))
-        self.assertTrue(isinstance(self.p.processes[0][2], type(multiprocessing.Queue())))
+        self.assertTrue(hasattr(self.p.processes[0][1], "poll"))
         self.assertEqual(self.p.processes[1][0], self.j2)
         self.assertEqual(self.p.processes[1][1], None)
-        self.assertEqual(self.p.processes[1][2], None)
 
     def test_add_list(self):
         l=self.p.add_list([self.j2, self.j1])
         self.assertEqual(len(l),2)
         self.assertTrue(isinstance(l[0], type(None)))
-        self.assertTrue(isinstance(l[1], type(multiprocessing.Queue())))
+        self.assertTrue(hasattr(l[1], "poll"))
         self.assertEqual(len(self.p.processes),2)
         self.assertEqual(self.p.processes[0][0], self.j2)
         self.assertEqual(self.p.processes[1][0], self.j1)
-        self.assertTrue(isinstance(self.p.processes[1][1], type(multiprocessing.Queue())))
+        self.assertTrue(hasattr(self.p.processes[1][1], "poll"))
 
     def test_send_object(self):
         self.p.add_list([self.j1, self.j3])
@@ -897,7 +869,7 @@ class TestProcessList(unittest.TestCase):
             M_NAME="objJob"
 
             def op(self):
-                self.output.put("Str object")
+                self.pipe.send("Str object")
 
         self.p.add_list([self.j1,self.j3,self.j4,objJob()])
         self.p.add(self.job_starter())
@@ -958,18 +930,16 @@ class TestProcessList(unittest.TestCase):
         # Note transparent exception raising is tested in TestProcess.testOP()
 
     def test_get_ids(self):
-        # TODO Belongs in TestProcess
         class agent(Process):
             M_NAME="Agent"
             def op(opself):
-                self.assertEqual(opself.get_ids('Agent', block=True), [opself.m_id,])
+                # Ask for id, but don't block; it's not cached so we'll get
+                # none, but it'll trigger the id to be cached in the background
+                self.assertEqual(len(opself.get_ids('Agent', block=False)), 0)
+                # Ask again, but blocking until we get the right id now.
+                self.assertEqual(opself.get_ids('Agent'), [opself.m_id])
                 # We've now got the Agent id cached, so we can ask for it again without blocking
                 self.assertEqual(opself.get_ids('Agent', block=False), [opself.m_id,])
-                # Note in practice, you'd probably do this the other way round
-                # if you do it at all - non-blocking first to give the
-                # supervisor time to process your request, then blocking when
-                # you actually need it.
-
                 # Finally, a negative test
                 self.assertEqual(opself.get_ids('Non existent name'), [])
 
@@ -984,7 +954,7 @@ class TestProcessList(unittest.TestCase):
             M_NAME="Agent"
             def op(opself):
                 opself.send(opself.sup_id, GetIdsMessage, opself.m_id, 'Agent')
-                ids = opself.input.get(block=True).ids
+                ids = opself.pipe.recv().ids
                 # Safe to assume the next message is a IdsReplyMessage only
                 # because we're the only process here.  If anything else it
                 # liable to talk to you, the suggested API is to use
@@ -1063,7 +1033,7 @@ class TestProcessList(unittest.TestCase):
                         self.prnt("ERROR: No id got")
                     else:
                         self.prnt("ERROR: Too many ids got")
-                m=self.input.get(block=True)
+                m=self.pipe.recv()
                 if isinstance(m, Test_Handshake_reply):
                     self.prnt("Test OK!")
                 else:
@@ -1072,7 +1042,7 @@ class TestProcessList(unittest.TestCase):
         class agent_two(Process):
             M_NAME="Agent 2"
             def op(self):
-                m=self.input.get(block=True)
+                m=self.pipe.recv()
                 if isinstance(m, Test_Handshake_init):
                     # Send a reply back to the source of the handshake
                     self.send(m.source,Test_Handshake_reply)
