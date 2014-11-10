@@ -449,9 +449,9 @@ class Process(multiprocessing.Process):
     deem fit.  Then instantiate it, passing in the values for those arguments
     and pass the object to ProcessList.add() or add_list().
 
-    To implement message passing, write messages using self.pipe.send() and
-    get them back in the originating process by using a message handler passed
-    to ProcessList.supervise(messageHandler=lambda:pass) TODO out of date?
+    To implement message passing, write messages using self.send() and
+    get them by implementing handle_message() in the targetted process and
+    calling self.receive() periodically in your op() there.
     '''
     # M_NAME = "Set this to give your thing a name"
     LISTEN_TO=[]
@@ -476,12 +476,20 @@ class Process(multiprocessing.Process):
 
     def send(self, target_ids, m_type, *args):
         '''
-        Message object sender helper. Arguments:
-        target_ids - The recipient ids of the message e.g. self.sup_id for the
-                     supervisor, 0 for all ids
+        Message object sender. Arguments:
+        target_ids - The recipient ids of the message e.g. the results of a
+                     call to get_ids(), 0 for all ids
         m_type     - the type of the message object to send e.g, EmptyMessage
         other args - further positional arguments are sent as arguments to the
                      message constructor
+        Examples:
+            # Send a DemoMessage instance to the process with M_NAME=='target'
+            self.send(self.get_ids('target'),DemoMessage,"DemoVal")
+            # Send a DemoMessage to all registered processes
+            self.send(0,DemoMessage,"DemoVal")
+            # Send a DemoMessage only to no processess except those listening
+            # for the type DemoMessage.
+            self.send(1,DemoMessage,"DemoVal")
         '''
         if hasattr(target_ids, "rfind"):
             # If a single string, put it in a list
@@ -683,7 +691,6 @@ class DebugLogger(Logger):
         self.prnt(m)
 
 ### Test code ############################################################
-# TODO: Use multiprocessing.Value (or possibly Array) to share state between test code and parent
 
 import unittest, time
 
@@ -853,14 +860,14 @@ class TestProcessList(unittest.TestCase):
         self.assertTrue(self.p.is_alive())
         if self.j1.is_alive(): self.j1.terminate()
         if self.j2.is_alive(): self.j2.terminate()
-        time.sleep(0.5) # Hack: Needs a little time to terminate stuff
+        time.sleep(0.1) # Hack: Needs a little time to terminate stuff
         self.assertFalse(self.p.is_alive())
 
     def test_terminate(self):
         self.p.add_list([self.j1, self.j2])
         self.p.start()
         self.p.terminate()
-        time.sleep(0.5)
+        time.sleep(0.1)
         self.assertFalse(self.j1.is_alive())
         self.assertFalse(self.j2.is_alive())
 
@@ -1064,12 +1071,11 @@ class TestProcessList(unittest.TestCase):
                 self.assertEqual(type(m),self_.messagetypes[self_.messageindex])
                 self_.messageindex=self_.messageindex+1
 
-        message={'val':None}
         def testHandler(m):
             if m.startswith('ERROR:'):
                 print m
             else:
-                message['val']=m
+                self.assertEqual(m, "Test OK!")
 
         pl=ProcessList()
         pl.add(agent_one())
@@ -1077,7 +1083,6 @@ class TestProcessList(unittest.TestCase):
         pl.add(logger())
         #pdb.set_trace()
         pl.supervise(prntHandler=testHandler)
-        self.assertEqual(message['val'],"Test OK!")
 
 class TestProcess(unittest.TestCase):
     def testInit(self):
@@ -1090,7 +1095,6 @@ class TestProcess(unittest.TestCase):
                 self.prnt('Calling testP.op')
                 super(testP,self).op() # Uh-oh!
 
-        # Alternative way to store test states outside the test handlers
         messaged={'val':0}
 
         def testHandler(m):
@@ -1109,8 +1113,8 @@ class TestProcess(unittest.TestCase):
         messaged={'val':False}
         def testHandler(m):
             expected='Test prnt'
-            if m==expected:
-                messaged['val']=True
+            self.assertFalse(messaged['val'])
+            messaged['val']=True
             self.assertEqual(m, expected)
 
         class testProcess(Process):
