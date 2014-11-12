@@ -126,58 +126,33 @@ class ExceptionMessage(EmptyMessage):
 class ProcessList(object):
     '''
     A wrapper class to collect together a bunch of multiprocessing.Process
-    objects and apply functions like start(), join() to them all, as well as
-    supervisor functions to automate passing messages between processes
+    objects and apply functions like start() or join() to them all.
     '''
-    # Constants for non-specific target ids
-    BROADCAST=0 #: Send to all processes
-    LISTENERS=1 #: Send to none except those listeneing for this message type
 
     def __init__(self):
-        self.m_id=hex(id(self))
         self.processes=[]
-        self.listening=dict()
+        super(ProcessList, self).__init__()
 
     def add(self, process):
         '''
-        Add a Process to be later start()ed or supervise()d
+        Add a Process to be later start()ed
 
-        Process subclasses which has the set_pipe() function will have their
-        pipe configured for use by the supervisor
         '''
-        process.m_id="{0}_{1}".format(self.m_id, str(len(self.processes)+1))
-        process.sup_id=self.m_id
-
-        record=[process,None]
-        if hasattr(process, 'set_pipe'):
-            (record[1],remote)=multiprocessing.Pipe()
-            process.set_pipe(remote)
-
-        if hasattr(process, 'LISTEN_TO'):
-            for type_ in process.LISTEN_TO:
-                try:
-                    self.listening[type_].add(record[1])
-                except KeyError:
-                    self.listening[type_]=set([record[1]])
-
-        self.processes.append(tuple(record))
-        return record[1]
+        self.processes.append(process)
 
     def add_list(self, processes):
         '''
         Add a list of Processes to be later start()ed
         '''
-        pipes=[]
         for p in processes:
-            pipes.append(self.add(p))
-        return pipes
+            self.add(p)
 
     def start(self):
         '''
         Start all Processes
         '''
         for p in self.processes:
-            p[0].start()
+            p.start()
 
     def is_alive(self):
         '''
@@ -185,7 +160,7 @@ class ProcessList(object):
         '''
         alive=False
         for p in self.processes:
-            if p[0].is_alive(): alive=True
+            if p.is_alive(): alive=True
         return alive
 
     def join(self,timeout=None):
@@ -197,7 +172,7 @@ class ProcessList(object):
         timeout - Number of seconds (may be fractional) to block for per process
         '''
         for p in self.processes:
-            p[0].join(timeout)
+            p.join(timeout)
 
     def terminate(self):
         '''
@@ -205,9 +180,48 @@ class ProcessList(object):
         multiprocessing docs for warnings about Process.terminate().
         '''
         for p in self.processes:
-            p[0].terminate()
+            p.terminate()
 
-    # Supervisor-type functions - Inter-process communication
+class Supervisor(ProcessList):
+    '''
+    Functions as a ProcessList as well as a supervisor to automate
+    passing messages between processes
+    '''
+    # Constants for non-specific target ids
+    BROADCAST=0 #: Send to all processes
+    LISTENERS=1 #: Send to none except those listeneing for this message type
+
+    def __init__(self):
+        self.m_id=hex(id(self))
+        self.connections=[]
+        self.listening=dict()
+        super(Supervisor, self).__init__()
+
+    def add(self, process):
+        '''
+        Process subclasses which has the set_pipe() function will have their
+        pipe configured for use by the supervisor
+        '''
+        process.m_id="{0}_{1}".format(self.m_id, str(len(self.processes)+1))
+        process.sup_id=self.m_id
+        super(Supervisor, self).add(process)
+
+        conn=None
+        if hasattr(process, 'set_pipe'):
+            (local_,remote)=multiprocessing.Pipe()
+            process.set_pipe(remote)
+            conn=local_
+            if hasattr(process, 'LISTEN_TO'):
+                for type_ in process.LISTEN_TO:
+                    try:
+                        self.listening[type_].add(conn)
+                    except KeyError:
+                        self.listening[type_]=set([conn])
+        elif hasattr(process, 'LISTEN_TO'):
+            if len(process.LISTEN_TO) > 0:
+                raise RuntimeError('Process defines LISTEN_TO, but not '+
+                  'set_pipe(); can\'t send listened to messages without a pipe')
+        self.connections.append(conn)
 
     def get_message(self, block=True, timeout=None):
         '''
@@ -223,22 +237,21 @@ class ProcessList(object):
         Returns:
             The message sent (normally expected to be a Message object)
         '''
-        connections={p[1] for p in self.processes if p[1]}
         if block and timeout:
-            poll_time=timeout/len(connections)/10.0
+            poll_time=timeout/len([c for c in self.connections if c])/10.0
             for i in range(1,10):
-                for c in connections:
+                for c in [c for c in self.connections if c]:
                     if c.poll(poll_time):
                         return c.recv()
             raise Queue.Empty("No processes sent a message")
         elif block:
             while True:
-                for c in connections:
+                for c in [c for c in self.connections if c]:
                     if c.poll():
                         return c.recv()
         else:
             # Block is false
-            for c in connections:
+            for c in [c for c in self.connections if c]:
                 if c.poll():
                     return c.recv()
             raise Queue.Empty("No processes sent a message")
@@ -251,17 +264,18 @@ class ProcessList(object):
         Raises:
             ValueError - If the requested id was not found
         '''
-        if target==ProcessList.LISTENERS:
+        if target==Supervisor.LISTENERS:
             return set()
-        elif target==ProcessList.BROADCAST:
-            return {p[1] for p in self.processes if p[1]}
+        elif target==Supervisor.BROADCAST:
+            return {c for c in self.connections if c}
         else:
-            i={p[1] for p in self.processes if p[1] and p[0].m_id==target}
-            if len(i)==0:
+            c=set([self.connections[n] for n in xrange(len(self.processes))
+              if self.connections[n] and self.processes[n].m_id==target])
+            if len(c)==0:
                 raise ValueError(
                   "No process found with id '{0}'".format(target)
                 )
-            return i
+            return c
 
     def __get_listeners(self, m_type):
         '''
@@ -313,8 +327,8 @@ class ProcessList(object):
         '''
         ids=[]
         for p in self.processes:
-            if hasattr(p[0],'M_NAME') and p[0].M_NAME == name:
-                ids.append(p[0].m_id)
+            if hasattr(p,'M_NAME') and p.M_NAME == name:
+                ids.append(p.m_id)
         return ids
 
     def __handle_message(self, m, prntHandler, objHandler):
@@ -393,7 +407,7 @@ class ProcessList(object):
         if warn:
             warning=False
             for p in self.processes:
-                if not hasattr(p[0], 'set_pipe'):
+                if not hasattr(p, 'set_pipe'):
                     warning=True
             if warning:
                 print """
@@ -401,7 +415,7 @@ WARNING: Messages from standard multiprocessing.Process objects that don't use
 this class's output Queue will not be received.
 """
         self.start()
-        while self.__sup_is_alive():
+        while self.is_alive():
             self.join(interval)
             try:
                 while True:
@@ -410,34 +424,34 @@ this class's output Queue will not be received.
                         if not self.__handle_message(
                           m, prntHandler, objHandler
                         ):
-                            self.stop()
-                            loggerid=None
+                            self.terminate()
                     except SupervisorException as e:
                         print "ERROR: Supervisor; Invalid message received; {0}:\n{1}".format(str(m),str(e))
             except Queue.Empty:
                 pass
         for p in self.processes:
-            if p[0].RESIDENT:
-                self.send(ResidentTermMessage(p[0].m_id))
+            if hasattr(p, 'RESIDENT') and p.RESIDENT:
+                self.send(ResidentTermMessage(p.m_id))
         if finishHandler != None:
             finishHandler()
 
-    def __sup_is_alive(self):
+    def is_alive(self):
         '''
-        Superviser method to see if all processes (except the logger) have
-        finished naturally (either through error or just finishing their op
-        method).
+        Method to see if all processes (except the resident ones) have
+        finished naturally (either through error or just finishing their
+        op() method).
 
         This method also releases queues for finsihed processes, so that
         messages can no longer be sent to them.
         '''
         alive=False
-        for p in self.processes:
-            if p[0].is_alive():
-                if p[0].RESIDENT == False:
+        for n in xrange(len(self.processes)):
+            if self.processes[n].is_alive():
+                if (hasattr(self.processes[n], 'RESIDENT') and
+                  self.processes[n].RESIDENT == False):
                     alive=True
             else:
-                p=(p[0],None,None)
+                self.connections[n]=None
         return alive
 
 class Process(multiprocessing.Process):
@@ -465,7 +479,7 @@ class Process(multiprocessing.Process):
                 print "WARNING: Must set a string 'M_NAME' for your Process"
             self.queries=collections.deque()
             self.ids={}
-            super(Process, self).__init__(target=self.wrap_op,args=args,kwargs=kwargs)
+            super(Process, self).__init__(target=self.__wrap_op,args=args,kwargs=kwargs)
 
     def set_pipe(self, pipe):
         '''
@@ -573,7 +587,7 @@ class Process(multiprocessing.Process):
 
         return self.ids[name]
 
-    def wrap_op(self, *args, **kwargs):
+    def __wrap_op(self, *args, **kwargs):
         # Preassigned exception message in case of truly exceptional
         # circumstances (e.g. MemoryError)
         crash=ExceptionMessage(self.sup_id, self.m_id,
@@ -590,7 +604,6 @@ class Process(multiprocessing.Process):
             except Exception:
                 self.pipe.send(crash)
         self.pipe.close()
-        #self.pipe.join_thread()
 
     def receive(self, block=True, sleep=0.5):
         '''
@@ -640,7 +653,7 @@ class Process(multiprocessing.Process):
                   )
                 )
         else:
-            self.handle_message(m)
+            return self.handle_message(m)
 
     def op(self):
         '''
@@ -729,9 +742,83 @@ class Test_Handshake_init(QueryMessage):
 class Test_Handshake_reply(EmptyMessage):
     pass
 
+import ctypes
+
 class TestProcessList(unittest.TestCase):
+    class JobOne(multiprocessing.Process):
+        def __init__(self, val):
+            self.val=val
+            super(TestProcessList.JobOne, self).__init__()
+
+        def run(self):
+            self.val.value="Been run"
+
+    class JobTwo(JobOne):
+        def run(self):
+            self.val.value="Been run two"
+
+    class JobSlow(JobOne):
+        def run(self):
+            time.sleep(1)
+            self.val.value="All done now"
+
+    def setUp(self):
+        self.p=ProcessList()
+        self.j1=self.JobOne(multiprocessing.Value(ctypes.c_char_p,"Not been run"))
+        self.j2=self.JobTwo(multiprocessing.Value(ctypes.c_char_p,"Not been run either"))
+        self.js=self.JobSlow(multiprocessing.Value(ctypes.c_char_p,"Not started yet"))
+
+    def test_init(self):
+        self.assertEqual(self.p.processes,[])
+
+    def test_add(self):
+        self.p.add(self.j1)
+        self.assertEqual(len(self.p.processes),1)
+        self.assertEqual(self.p.processes[0].val.value,"Not been run")
+        self.p.add(self.j2)
+        self.assertEqual(len(self.p.processes),2)
+        self.assertEqual(self.p.processes[1].val.value,"Not been run either")
+
+    def test_add_list(self):
+        self.p.add_list([self.j2,self.j1])
+        self.assertEqual(len(self.p.processes),2)
+        self.assertEqual(self.p.processes[1].val.value,"Not been run")
+        self.assertEqual(self.p.processes[0].val.value,"Not been run either")
+
+    def test_start(self):
+        self.p.add_list([self.j1,self.j2])
+        self.p.start()
+        self.p.join()
+        self.assertEqual(self.p.processes[0].val.value,"Been run")
+        self.assertEqual(self.p.processes[1].val.value,"Been run two")
+
+    def test_is_alive(self):
+        self.p.add_list([self.js,self.j2])
+        self.p.start()
+        self.assertTrue(self.p.is_alive())
+        self.p.join()
+        while self.js.val.value=="Not started yet":
+            pass
+        self.assertFalse(self.p.is_alive())
+
+    def test_join(self):
+        self.p.add_list([self.j1, self.js])
+        self.p.start()
+        self.p.join(timeout=0.1)
+        self.assertEqual(self.js.val.value, "Not started yet")
+        self.p.join()
+        self.assertEqual(self.js.val.value, "All done now")
+
+    def test_terminate(self):
+        self.p.add(self.js)
+        self.p.start()
+        self.p.terminate()
+        self.assertEqual(self.js.val.value, "Not started yet")
+
+class TestSupervisor(unittest.TestCase):
     tick=0.2
 
+    #TODO Test handle_message returning false
     class job_one(Process):
         '''
         Simple job demostrating sending StringMessages
@@ -744,7 +831,7 @@ class TestProcessList(unittest.TestCase):
         def handle_message(self,m):
             # Start on first message
             self.send(self.sup_id,StringMessage,'Starting job one') # Helper for sending message objects
-            time.sleep(2*TestProcessList.tick)
+            time.sleep(2*TestSupervisor.tick)
             self.prnt('Finished job one') # Shortcut for sending objects
 
     def job_two(self,inpt,output):
@@ -752,7 +839,7 @@ class TestProcessList(unittest.TestCase):
         Non-Process derived demo of non-supervisable messages that can still communicate (provided you generate and provide Queue objects for that purpose)
         '''
         inpt.get(block=True)
-        time.sleep(TestProcessList.tick)
+        time.sleep(TestSupervisor.tick)
         output.put('Starting job two')
         output.close()
         output.join_thread()
@@ -765,17 +852,17 @@ class TestProcessList(unittest.TestCase):
             self.receive()
 
         def handle_message(self,m):
-            time.sleep((self.num*2-5)*TestProcessList.tick) # 3=1 tick,4=3 ticks
+            time.sleep((self.num*2-5)*TestSupervisor.tick) # 3=1 tick,4=3 ticks
             self.prnt('Starting job '+str(self.num)) # Shortcut for sending a StringMessage
-            time.sleep((12-self.num*3)*TestProcessList.tick) # 3=1+3 ticks,4=3+0
+            time.sleep((12-self.num*3)*TestSupervisor.tick) # 3=1+3 ticks,4=3+0
             self.prnt('Finished job '+str(self.num))
 
     class job_starter(Process):
         M_NAME="Job starter"
 
         def op(self):
-            time.sleep(TestProcessList.tick)
-            self.send(ProcessList.BROADCAST, StringMessage, "Go go go!")
+            time.sleep(TestSupervisor.tick)
+            self.send(Supervisor.BROADCAST, StringMessage, "Go go go!")
 
     # Schedule reference:
     # -1 ticks - job_starter starts
@@ -786,7 +873,7 @@ class TestProcessList(unittest.TestCase):
     # ...
     # 5 ticks - 'Finished job 3'
     def setUp(self):
-        self.p=ProcessList()
+        self.p=Supervisor()
         # No arguments
         self.j1=self.job_one()
         # Non-multitools.Process (old style)
@@ -801,34 +888,32 @@ class TestProcessList(unittest.TestCase):
 
     def test_init(self):
         self.assertEqual(self.p.processes,[])
+        self.assertEqual(self.p.connections,[])
 
     def test_add(self):
-        self.assertTrue(hasattr(self.p.add(self.j1), "poll"))
-        self.assertTrue(isinstance(self.p.add(self.j2), type(None)))
-        self.assertEqual(len(self.p.processes),2)
-        self.assertEqual(self.p.processes[0][0], self.j1)
-        self.assertTrue(hasattr(self.p.processes[0][1], "poll"))
-        self.assertEqual(self.p.processes[1][0], self.j2)
-        self.assertEqual(self.p.processes[1][1], None)
+        self.p.add(self.j1)
+        self.p.add(self.j2)
+        self.assertEqual(self.p.processes[0], self.j1)
+        self.assertTrue(hasattr(self.p.connections[0], "poll"))
+        self.assertEqual(self.p.processes[1], self.j2)
+        self.assertEqual(self.p.connections[1], None)
 
     def test_add_list(self):
-        l=self.p.add_list([self.j2, self.j1])
-        self.assertEqual(len(l),2)
-        self.assertTrue(isinstance(l[0], type(None)))
-        self.assertTrue(hasattr(l[1], "poll"))
+        self.p.add_list([self.j2, self.j1])
         self.assertEqual(len(self.p.processes),2)
-        self.assertEqual(self.p.processes[0][0], self.j2)
-        self.assertEqual(self.p.processes[1][0], self.j1)
-        self.assertTrue(hasattr(self.p.processes[1][1], "poll"))
+        self.assertEqual(self.p.processes[0], self.j2)
+        self.assertEqual(self.p.processes[1], self.j1)
+        self.assertEqual(self.p.connections[0], None)
+        self.assertTrue(hasattr(self.p.connections[1], "poll"))
 
     def test_send_object(self):
         self.p.add_list([self.j1, self.j3])
         self.p.start()
-        self.p.send_object(ProcessList.BROADCAST, StringMessage(None, "Ok, go!"))
+        self.p.send_object(Supervisor.BROADCAST, StringMessage(None, "Ok, go!"))
         self.assertEqual(str(self.p.get_message()),"Starting job one")
         self.assertEqual(str(self.p.get_message(timeout=2)),"Starting job 3")
         self.assertEqual(str(self.p.get_message()),"Finished job one")
-        time.sleep(4*TestProcessList.tick)
+        time.sleep(4*TestSupervisor.tick)
         self.assertEqual(str(self.p.get_message(block=False)),"Finished job 3")
 
     def test_start(self):
@@ -846,7 +931,7 @@ class TestProcessList(unittest.TestCase):
     def test_join(self):
         self.p.add_list([self.j2, self.j1])
         self.p.start()
-        self.p.send_object(ProcessList.BROADCAST, StringMessage(None, "Ok, go!"))
+        self.p.send_object(Supervisor.BROADCAST, StringMessage(None, "Ok, go!"))
         self.j2i.put("Right, you too!")
         self.p.join()
         self.assertEqual(str(self.p.get_message()),"Starting job one")
@@ -855,6 +940,7 @@ class TestProcessList(unittest.TestCase):
         self.assertEqual(self.j2o.get(),"Starting job two")
 
     def test_is_alive(self):
+        #TODO: Need resident process to test
         self.p.add_list([self.j1, self.j2])
         self.p.start()
         self.assertTrue(self.p.is_alive())
@@ -931,7 +1017,7 @@ class TestProcessList(unittest.TestCase):
         prntProxy = lambda m: handler.prntHandler(m)
         finishedProxy = lambda: handler.finishedHandler()
         objProxy = lambda m: handler.objHandler(m)
-        self.p.supervise(TestProcessList.tick/4.0,prntProxy,finishedProxy,objProxy,warn=False)
+        self.p.supervise(TestSupervisor.tick/4.0,prntProxy,finishedProxy,objProxy,warn=False)
         self.assertTrue(handler.passed)
         # Note: Not testing warner automatically
         # Note transparent exception raising is tested in TestProcess.testOP()
@@ -950,9 +1036,8 @@ class TestProcessList(unittest.TestCase):
                 # Finally, a negative test
                 self.assertEqual(opself.get_ids('Non existent name'), [])
 
-        pl=ProcessList()
-        pl.add(agent())
-        pl.supervise()
+        self.p.add(agent())
+        self.p.supervise()
 
     # IPC tests
 
@@ -968,9 +1053,8 @@ class TestProcessList(unittest.TestCase):
                 # self.get_ids()
                 self.assertEqual(len(ids), 1)
                 self.assertEqual(ids[0],opself.m_id)
-        pl=ProcessList()
-        pl.add(agent())
-        pl.supervise()
+        self.p.add(agent())
+        self.p.supervise()
 
     def test_listening(self):
         class TestL1(Process):
@@ -1016,16 +1100,15 @@ class TestProcessList(unittest.TestCase):
             M_NAME='Test Server'
 
             def op(self):
-                self.send(ProcessList.LISTENERS, Test_Handshake_reply)
-                self.send(ProcessList.LISTENERS, InputResponseMessage, "Test message")
-                self.send(ProcessList.LISTENERS, EmptyMessage) # Should get sent to no one
-                self.send(ProcessList.BROADCAST, ResidentTermMessage)
+                self.send(Supervisor.LISTENERS, Test_Handshake_reply)
+                self.send(Supervisor.LISTENERS, InputResponseMessage, "Test message")
+                self.send(Supervisor.LISTENERS, EmptyMessage) # Should get sent to no one
+                self.send(Supervisor.BROADCAST, ResidentTermMessage)
 
-        pl=ProcessList()
-        pl.add(TestL1())
-        pl.add(TestL2())
-        pl.add(TestS())
-        pl.supervise()
+        self.p.add(TestL1())
+        self.p.add(TestL2())
+        self.p.add(TestS())
+        self.p.supervise()
 
     def testIPC(self):
         class agent_one(Process):
@@ -1077,12 +1160,12 @@ class TestProcessList(unittest.TestCase):
             else:
                 self.assertEqual(m, "Test OK!")
 
-        pl=ProcessList()
-        pl.add(agent_one())
-        pl.add(agent_two())
-        pl.add(logger())
+        self.p.add(agent_one())
+        self.p.add(agent_two())
+        self.p.add(logger())
         #pdb.set_trace()
-        pl.supervise(prntHandler=testHandler)
+        self.p.supervise(prntHandler=testHandler)
+        #TODO: Add a simple Process and check it doesn't try to broadcast to it
 
 class TestProcess(unittest.TestCase):
     def testInit(self):
@@ -1104,9 +1187,9 @@ class TestProcess(unittest.TestCase):
                 print "ERROR: Received via prnt unexpected message:",m
 
         tp=testP()
-        pl=ProcessList()
-        pl.add(tp)
-        self.assertRaises(NotImplementedError, pl.supervise, prntHandler=testHandler)
+        s=Supervisor()
+        s.add(tp)
+        self.assertRaises(NotImplementedError, s.supervise, prntHandler=testHandler)
         self.assertEqual(messaged['val'],1)
 
     def testPrnt(self):
@@ -1123,9 +1206,9 @@ class TestProcess(unittest.TestCase):
                 self.prnt('Test prnt')
 
         tp=testProcess()
-        pl=ProcessList()
-        pl.add(tp)
-        pl.supervise(prntHandler=testHandler)
+        s=Supervisor()
+        s.add(tp)
+        s.supervise(prntHandler=testHandler)
         self.assertTrue(messaged['val'])
 
     def testInpt(self):
