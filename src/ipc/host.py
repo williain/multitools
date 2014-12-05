@@ -95,10 +95,16 @@ class Supervisor(multitools.ProcessList):
             return {c for c in self.connections if c}
         else:
             c=set([self.connections[n] for n in xrange(len(self.processes))
-              if self.connections[n] and self.processes[n].m_id==target])
+              if self.processes[n].m_id==target]
+            )
             if len(c)==0:
                 raise ValueError(
                   "No process found with id '{0}'".format(target)
+                )
+            v=(conn for conn in c if conn)
+            if len(c)==0:
+                raise ValueError(
+                  "All processes with id '{0}' have terminated, or were not valid"
                 )
             return c
 
@@ -136,7 +142,7 @@ class Supervisor(multitools.ProcessList):
                 if c:
                     c.send(message)
         except ValueError as e:
-            raise SupervisorException("Not able to send message to process; unknown id '{0}'; message was '{1}'".format(target_id, message))
+            raise SupervisorException("{0}; message was '{1}'".format(str(e), message))
 
     def send(self, message):
         '''
@@ -624,13 +630,23 @@ class TestSupervisor(unittest.TestCase):
             def op(self):
                 self.messagetypes=[Test_Handshake_init, Test_Handshake_reply]
                 self.messageindex=0
-                while self.messageindex<len(self.messagetypes):
-                    self.receive(block=True)
+                self.running=True
+                while self.running:
+                    #TODO Some code revisions suggest this op has terminated
+                    # before ResidentTermMessage can be sent to it, but
+                    # since adding exception text to distinguish between
+                    # a terminated process and an invalid id, I can't
+                    # reproduce it no more :(
+                    self.receive(timeout=0.1)
 
             def handle_message(self_, m):
-                self.assertLess(self_.messageindex, len(self_.messagetypes))
-                self.assertEqual(type(m),self_.messagetypes[self_.messageindex])
-                self_.messageindex=self_.messageindex+1
+                if isinstance(m, multitools.ipc.ResidentTermMessage):
+                    self_.running=False
+                    self.assertEqual(self_.messageindex, len(self_.messagetypes))
+                else:
+                    self.assertLess(self_.messageindex, len(self_.messagetypes))
+                    self.assertEqual(type(m),self_.messagetypes[self_.messageindex])
+                    self_.messageindex=self_.messageindex+1
 
         def testHandler(m):
             if m.startswith('ERROR:'):

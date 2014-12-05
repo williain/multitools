@@ -73,6 +73,38 @@ class Process(multiprocessing.Process):
         if len(target_ids)==0:
             raise IndexError("{0} not sent to no targets! Args:{1}".format(m_type.__name__, str(args)))
 
+    def get(self, timeout=None, sleep=None):
+        '''
+        Call this to check for messages and respond to them.  Note you need to
+        have implemented handle_messages() to use this.
+
+        Args:
+          timeout - Block if set to None (the default), else block until the
+                    timeout is expired.
+          sleep   - If a timeout is set, the time to wait between checking
+                    whether the timeout is exceeded.  Default is to check ten
+                    times (i.e. sleep=timeout/10)
+
+        Raises:
+          Queue.Empty - If timed out, and no messages are queued.
+        '''
+
+        if timeout==None:
+            #Blocking invocation
+            return self.pipe.recv()
+        else:
+            start=time.time()
+            if sleep==None:
+                sleep=timeout/10
+            while time.time()<start+timeout:
+                if self.pipe.poll():
+                    return self.pipe.recv()
+                else:
+                    time.sleep(sleep)
+            if self.pipe.poll():
+                return self.pipe.recv()
+            else:
+                raise Queue.Empty("get() did not receive any input in the timeout specified")
 
     def prnt(self, *args):
         '''
@@ -102,27 +134,30 @@ class Process(multiprocessing.Process):
             else:
                 self.__handle_message(m)
 
-    def get_ids(self, name, block=True, sleep=0.5):
+    def get_ids(self, name, block=True):
         '''
-        Get the set of ids which correspond to the process name supplied.
+        Get the set of ids from the supervisor which correspond to the
+        process name supplied.
 
         Note this function blocks by default, waiting for a response from the
-        supervisor.
+        supervisor, if it hasn't already cached the result (in which case
+        it will return the result immediately)
 
         A non-blocking get_ids() call will only return a set of ids if it's
-        already cached them.  It it's sensible for your task, you can make a
-        non-blocking call first of all then get on with some work (discarding
-        the result of that call), before later getting them using a blocking
-        call to get_ids when you actually need the id, which will use the
-        cached value if it's already got it, or process the messages
-        containing the answer you need which was triggered by your first call.
+        already cached them, else it will message the supervisor and not wait
+        for the reply. The reply, when it comes, will be processed provided
+        you call receive() periodicaly.
 
-        You can set this to a non-blocking call by passing block=False as an
-        argument.  If you don't do that, you can tune the maximum latency for
-        receiving messages versus CPU load by reducing or increasing the sleep
-        value respectively.
+        It it's sensible for your task, you can make a non-blocking call
+        first of all then get on with some work (discarding the result of
+        that call), before later getting them using a blocking call to
+        get_ids when you actually need the id, which will use the cached
+        value if it's already got it, or process the messages containing
+        the answer you need which was triggered by your first call.
 
-        If an invalid name is given, you will receive back the empty set
+        If an invalid name is given, you will receive back the empty set.
+        Unless you block, you cannot distinguish between the supervisor not
+        having replied yet, and the name not being valid.
         '''
         if not name in self.ids:
             self.receive_all()
@@ -133,7 +168,7 @@ class Process(multiprocessing.Process):
                     return set()
                 else:
                     while not name in self.ids:
-                        self.receive(sleep=sleep)
+                        self.receive()
 
         return self.ids[name]
 
@@ -166,30 +201,21 @@ class Process(multiprocessing.Process):
         if self.pipe:
             self.pipe.close()
 
-    def receive(self, block=True, sleep=0.5):
+    def receive(self, timeout=None, sleep=None):
         '''
         Call this to check for messages and respond to them.  Note you need to
         have implemented handle_messages() to use this.
 
         Args:
-          block - If False, check only for the first message already queued up.
-                  If True, check periodically for messages until one is
-                  received.
-          sleep - If blocking, the time to wait between checking for any
-                  messages to turn up.
+          timeout - Block if set to None (the default), else block until the
+                    timeout is expired.
+          sleep   - If not blocking, the time to wait between checking if the
+                    timeout has expired
 
         Raises:
           Queue.Empty - If not blocking, and no messages are queued.
         '''
-        if block:
-            while not self.pipe.poll():
-                time.sleep(sleep)
-            self.__handle_message(self.pipe.recv())
-        else:
-            if self.pipe.poll():
-                self.__handle_message(self.pipe.recv())
-            else:
-                raise Queue.Empty()
+        self.__handle_message(self.get(timeout=timeout, sleep=sleep))
 
     def receive_all(self):
         '''
@@ -198,7 +224,7 @@ class Process(multiprocessing.Process):
         '''
         try:
             while True:
-                self.receive(block=False)
+                self.receive(timeout=0)
         except Queue.Empty:
             pass
 
@@ -295,7 +321,7 @@ class TestProcess(unittest.TestCase):
         tp.join()
         m=this.recv()
         self.assertEqual(str(m), 'Test prnt')
-        self.assertIsInstance(m,multitools.ipc.StringMessage)
+        self.assertIs(type(m),multitools.ipc.StringMessage)
         self.assertFalse(this.poll())
 
     def testInpt(self):
