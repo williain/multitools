@@ -146,7 +146,7 @@ Introducing ipc.host.Supervisor
 
     s=multitools.ipc.host.Supervisor()
     val=multiprocessing.Value('i',0)
-    s.add(MyProcess(val,1234,5678)
+    s.add(MyProcess(val,1234,5678))
     s.supervise()
 
 multitools.ipc.host.Supervisor is a type of ProcessList, so it's just like
