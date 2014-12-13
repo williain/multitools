@@ -217,8 +217,7 @@ print handler to the supervisor e.g. ::
     s.supervisor(prntHandler=myPrntHandler)
 
 Add this to the previous code example (replacing the supervisor() call with
-this one), and this now prints 'CAUGHT DEBUG: 1234' if you replace the last
-line of the previous exampe with these lines.
+this one), and this now prints 'CAUGHT DEBUG: 1234'.
 
 This mechanism could be used for a simplified form of debug logging, or
 progress logging.
