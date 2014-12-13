@@ -21,15 +21,22 @@ class StringMessage(EmptyMessage):
         self.message=message
         super(StringMessage, self).__init__(target)
 
-    def __repr__(self):
-        return "{0}:{1}".format(super(StringMessage,self).__str__(), self.message)
+    def __str__(self):
+        return '{0};"{1}"'.format(super(StringMessage,self).__str__(), self.message)
+
+class PrntMessage(StringMessage):
+    '''
+    Class for use by client.Process.prnt.  Don't send this unless you know
+    what you're doing
+    '''
 
     def __str__(self):
-        return self.message
+        return str(self.message)
 
 class FileMessage(EmptyMessage):
     '''
-    Base class for all messages informing listeners about a file being generated
+    Base class for all messages informing recipients about a file being
+    generated
     '''
     def __init__(self, target, filename):
         self.filename=filename
@@ -39,7 +46,10 @@ class FileMessage(EmptyMessage):
         return "{0}:{1}".format(super(FileMessage, self).__str__(), self.filename)
 
 class QueryMessage(EmptyMessage):
-    '''A message representing a query'''
+    '''
+    Base class for queries like id queries and inpt queries.  Don't send
+    this unless you know what you're doing.
+    '''
     def __init__(self, target, source):
         self.source=source
         super(QueryMessage, self).__init__(target)
@@ -51,7 +61,7 @@ class QueryMessage(EmptyMessage):
 
 class InputMessage(QueryMessage):
     '''
-    A message signifying we want user input
+    A message signifying we want user input, used by client.Process.Inpt.
     '''
     def __init__(self, target, source, prompt=None):
         self.prompt=prompt
@@ -64,13 +74,15 @@ class InputMessage(QueryMessage):
 
 class InputResponseMessage(StringMessage):
     '''
-    A response to an InputMessage
+    A response to an InputMessage.  Don't send this unless you know what
+    you're doing.
     '''
     pass
 
 class GetIdsMessage(QueryMessage):
     '''
-    A message requesting the ids of concurrent processess
+    A message requesting the ids of concurrent processess, used by
+    client.Process.get_ids.
     '''
     def __init__(self, target, source, name):
         self.name=name
@@ -83,7 +95,8 @@ class GetIdsMessage(QueryMessage):
 
 class IdsReplyMessage(EmptyMessage):
     '''
-    A message replying to an id query with the ids requested
+    A message replying to an id query with the ids requested.  Don't send
+    this unless you know what you're doing.
     '''
     def __init__(self, target, ids):
         self.ids=ids
@@ -126,6 +139,10 @@ class Test_Messages(unittest.TestCase):
 
     def test_StringMessage(self):
         m = StringMessage("target", "testmessage")
+        self.assertEqual(str(m),'StringMessage to target;"testmessage"')
+
+    def test_PrntMessage(self):
+        m = PrntMessage("target", "testmessage")
         self.assertEqual(str(m),'testmessage')
 
     def test_FileMessage(self):

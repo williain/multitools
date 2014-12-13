@@ -70,20 +70,21 @@ To implement the same example a third time, but this time using multitools.Proce
 
     import multiprocessing
     import multitools
-    
-    def op(self, result, arg_one, arg_two):
+
+    def op(result, arg_one, arg_two):
         result.value=arg_one*arg_two
 
     val=multiprocessing.Value('i',0)
     p=multiprocessing.Process(target=op, args=[val,1234,5678])
-    pl=multitools.ProcessList
+    pl=multitools.ProcessList()
     pl.add(p)
     pl.start()
     pl.join()
+    print "Result",val.value
 
 In this example, using multitools.ProcessList just adds two lines and achieves
-nothing.  If you have more that one process to run though, ProcessList gives
-you power to call start() and join() once to start() and join() all the
+nothing extra.  If you have more that one process to run though, ProcessList
+gives you power to call start() and join() once to start() and join() all the
 processes you've add()ed.  For example::
 
     import multiprocessing
@@ -98,10 +99,12 @@ processes you've add()ed.  For example::
     pl=multitools.ProcessList()
     val_one=multiprocessing.Value('i',0)
     val_two=multiprocessing.Value('i',0)
-    pl.add(multiprocessing.Process(target=op_one, args=[val_one,1234])
-    pl.add(multiprocessing.Process(target=op_two, args=[val_two,678])
+    pl.add(multiprocessing.Process(target=op_one, args=[val_one,1234]))
+    pl.add(multiprocessing.Process(target=op_two, args=[val_two,5678]))
     pl.start()
     pl.join()
+    print "Result one",val_one.value
+    print "Result two",val_two.value
 
 To do the same without using multitools.ProcessList, you'd need to run
 Process.start() and Process.join() on all of them.  That's all ProcessList
@@ -113,9 +116,12 @@ Introducing ipc.client.Process
 ------------------------------
 ::
 
+    import multiprocessing
     import multitools, multitools.ipc.client
 
     class MyProcess(multitools.ipc.client.Process):
+        M_NAME=None
+
         def op(self, result, arg_one, arg_two):
             result.value=arg_one*arg_two
 
@@ -124,23 +130,34 @@ Introducing ipc.client.Process
     pl.add(MyProcess(val,1234,5678))
     pl.start()
     pl.join()
+    print "Result",val.value
 
-This example is more like the original class example, but it needs less
-boilerplate code to make it work.  multitools.ipc.client.Process inherits
+This example is more like the original class example, but it needs slightly
+less boilerplate code to make it work.  multitools.ipc.client.Process inherits
 from multiprocessing.Process, so it works in much the same way althogh note
-that your method is renamed back to op(), not run() this time.  If you do
-overload run() you'd need to put the code that takes the args in the class's
-_init__, and disable much of the supervisor functionality that follows - i.e.
-you might as well use multiprocessing.Process directly.
+that your method is renamed back to op(), not run() this time.
+
+If you do overload run() you'd need to put the code that takes the args in the
+class's __init__, and disable much of the supervisor functionality that
+follows - i.e. you might as well use multiprocessing.Process directly.
+
+Note the M_NAME constant defined (as None) there.  That's just there to prevent
+a warning output by the Process constructor.  We're slightly abusing its
+functionality here; as its name suggests, it's more designed to be used with
+the class documented next, where declaring an identifiable name is more
+important.  But for now we can just ignore the warning, so we suppress it by
+delaring it as any value, such as None.
 
 Introducing ipc.host.Supervisor
 -------------------------------
 ::
 
+    import multiprocessing
     import multitools.ipc.client, multitools.ipc.host
 
     class MyProcess(multitools.ipc.client.Process):
-        M_NAME='My process'
+        M_NAME=None
+
         def op(self, result, arg_one, arg_two):
             result.value=arg_one*arg_two
 
@@ -148,13 +165,15 @@ Introducing ipc.host.Supervisor
     val=multiprocessing.Value('i',0)
     s.add(MyProcess(val,1234,5678))
     s.supervise()
+    print "Result", val.value
 
 multitools.ipc.host.Supervisor is a type of ProcessList, so it's just like
-using one of those.  However, the supervisor sets up and maintains conections
-to your ipc.client.Processes, so it enables you to talk to your running
-processes (use Supervisor.supervise(), not .start() and .join()); note the
-definition of M_NAME - that's so other processes can find your process, and
-we'll cover that in a later section.
+using one of those.  In this example, using the supervisor just means calling
+s.supervise(), rather than s.start() and s.join(), but the supervisor also
+maintains connections to the processes which can enable the passing of data
+between the process and the supervisor.  The supervisor also detects special
+types of objects sent called ipc messages which it will send to their targetted
+process, as we'll see soon.
 
 ipc.client.Process.prnt()
 -------------------------
@@ -163,11 +182,12 @@ If you try to print to screen from your processes, it won't always work because
 TODO
 
 The prnt() function of ipc.client.Process is a drop in replacement for the
-print operator::
+print operator, when you're using the supervisor::
 
     import multitools.ipc.client, multitools.ipc.host
 
     class MyProcess(multitools.ipc.client.Process):
+        M_NAME="My process"
         def op(self, arg_one):
             self.prnt("DEBUG:",arg_one)
 
@@ -175,122 +195,257 @@ print operator::
     s.add(MyProcess(1234))
     s.supervise()
 
-The default behaviour is to print 'DEBUG: 1234' to screen.  You can override
-the behaviour of the prnt() function by passing a prnt-handler to the
-supervisor e.g. ::
+This code will print 'DEBUG: 1234' to screen.
+
+Supervisor Handlers
+...................
+
+One basic way to extend the supervisor is to use the handlers.  These are
+function arguments passed to the supervisor to extend it's functionality.
+
+These arguments are named prntHandler and objHandler for the print handler
+and object handler respectively.
+
+The print handler:
+
+You can override the behaviour of the prnt() function by passing a
+print handler to the supervisor e.g. ::
 
     def myPrntHandler(p):
         print "CAUGHT",p
 
     s.supervisor(prntHandler=myPrntHandler)
 
-This now prints 'CAUGHT DEBUG: 1234' if you replace the last line of the
-previous exampe with these lines.
+Add this to the previous code example (replacing the supervisor() call with
+this one), and this now prints 'CAUGHT DEBUG: 1234' if you replace the last
+line of the previous exampe with these lines.
 
 This mechanism could be used for a simplified form of debug logging, or
-progress logging, although there are better ways of doing either of those
-which we'll cover next:
+progress logging.
 
-ipc.client.Process.send()
--------------------------
-::
+The object handler:
 
-    import multiprocessing.ipc as ipc
-    import multiprocessing.ipc.client.Process as Process
-    import multiprocessing.ipc.host.Supervisor as Supervisor
+The object handler is a function passed to the supervisor using the
+objHandler named argument::
 
-    class MyResultsMessage(ipc.StringMessage):
-        pass
+    import multitools.ipc as ipc
+    from multitools.ipc.client import Process
+    from multitools.ipc.host import Supervisor
 
     class MyProcess(Process):
         M_NAME='My process'
         def op(self, arg_one, arg_two):
-            self.send(self.sup_id,MyResultsMessage,'DEBUG:'+str(arg_one*arg_two))
+            self.send_object(arg_one*arg_two)
 
     def myObjHandler(m):
-        print m
+        print "DEBUG:",m
 
     s=Supervisor()
-    s.add(MyProcess(1234,5678)
+    s.add(MyProcess(1234,5678))
     s.supervise(objHandler=myObjHandler)
 
-multitools.ipc.client.Process.send() takes a target id, an object message type
-and the arguments for that message.
+The ipc.Process class has a method called send_object which will send any
+object you pass back to the supervisor.  Without an object handler, the
+supervisor will throw an exception on receiving an unrecognised object.
 
-Note introduced in this example is the concept of an obj-handler.  This is
-another way to extend the functionality of the supervisor, making it able to
-handle user-defined types.
+Note we've now got rid of having to import multiprocessing to use a Value
+object, we can just use any serialisable object now (an int in this case).
+You can still use multiprocessing.Value if you want a value you can pass
+around and modify from anywhere, but it's unnecessary if you just want
+to get a value out.
 
-multitools.ipc.client.Process.get_ids()
----------------------------------------
+ipc.client.Process.inpt()
+-------------------------
 
-So far the only target id we've seen is self.sup_id which is the supervisor
-id, set in your process by the supervisor.  Adding get_ids it's possible to
-implement full interprocess communication::
+Getting user input from within a process can be tricky.  If you're an
+interactive process that can be problematic because you can't print out
+the prompt (except using .prnt()), and blocking on user input can TODO
 
-    import multitools.ipc as ipc
-    import multitools.client.Process as Process
-    import multitools.host.Supervisor as Supervisor
+The inpt() function saves you all that trouble.  Call it, and it will
+sit and wait for user input, then return what they entered to you. In
+other words it's a blocking call that returns the user input.
 
-    class Agent_One(Process):
-        M_NAME='Agent one'
+If you want a prompt, you can pass it as an argument::
+
+    class MyProcess(multitools.ipc.client.Process):
+        ...
+        def op(self,...):
+            ...
+            name=self.inpt("Enter your name:")
+            ...
+
+Sending messages
+================
+
+Overusing the handlers can lead to code that embeds much of its logic in
+the module that owns the supervisor instance.  You might find a better
+design for you code by allowing the overall behaviour to emerge from logic
+that is associated with the processes that receive them.
+
+To comminicate from one process to another, you'll need to send a message
+object.
+
+Message objects
+---------------
+
+multitools.ipc defines a handful of message object types.  Message objects
+follow a heirarchy, with all deriving ultimately from
+multitools.ipc.EmptyMessage.
+
+EmptyMessage takes only one argument - the target id, that is the id of the
+target process that should receive the message::
+
+    message=EmptyMessage("target_id")
+
+In practive, you'll rarely instantiate an empty message, unless you subclass
+it to give it a type that you can use as an event notifier.  Other message
+types take arguments, such as StringMessage::
+
+    message=StringMessage("target_id","Test Message")
+
+Process ids
+-----------
+
+Every process added to a host.Supervisor gets a process id (p_id)::
+
+    from multitools.ipc.client import Process
+    from multitools.ipc.host import Supervisor
+
+    class MyProcessOne(Process):
+        M_NAME=None
+
         def op(self):
-            print self.get_message()
-
-    class Agent_Two(Process):
-        M_NAME='Agent two'
-        def op(self):
-            self.send(self.get_ids('Agent one'),ipc.StringMessage,'Agent two signing in')
+            pass
 
     s=Supervisor()
-    s.add(Agent_One(),Agent_Two())
+    p=MyProcessOne()
+    s.add(p)
+    print p.p_id
+
+The p_id is what you need to put as the target id in a message object, and
+sending it will cause it to be sent to that process::
+
+    import multitools.ipc as ipc
+
+    class MyProcessTwo(Process):
+        M_NAME=None
+
+        def op(self, target, arg):
+            self.send_object(ipc.StringMessage(target, arg))
+
+    s.add(MyProcessTwo(p.p_id,"Test message"))
     s.supervise()
 
-In this example, we use no handlers to extend the supervisor.  This is the
-main model around which multitools was designed, allowing you to
-encapsulate message handling functionality within the process, enabling quite
-sophisticated behaviour to be encapsulated without the handlers needing to know
-the specifics of how everything operates.
+client.Process.get()
+--------------------
 
-Agent_Two calls self.get_ids() with the string argument 'Agent one'.  The
-function returns all matching processes, allowing you to switch out multiple
-processes all called 'agent one' to alter functionalty, or even run more than
-one 'agent one' at the same time.  self.send() takes this list and sends
-a copy of the message to all recipients named 'agent one'.
+To receive objects you simply need to call self.get() from within a
+client.Process.  It will block and return the next object received;
+replace MyProcessOne()'s op() method in the previous example with::
 
-At the same time, the receiver calls self.get().  This blocks by default, so
-if you were to not include agent_two which sends the message, your process
-wouldn't terminate, and the whole program will hang. Your only escape is
-to abort the process with a SIGINT or Ctrl-C, which will cause a
-KeyboardInterrupt and a whole unwinding of all the running processes,
-including the the multitools and multiprocessing magic going on behind the
-scenes.
+    def op(self):
+        print "DEBUG:",self.get()
+
+Now, when run it will print out::
+
+    DEBUG: StringMessage to 0xhhhhhhhh_1;"Test message"
+
+...where 0xhhhhhhhh is the 32 bit supervisor id; all processes attached to
+the same supervisor will have that part of their id the same, but the number
+on the end incremented.
+
+Since get() blocks by default, if you were to not include MyProcessTwo which
+sends the message, your process wouldn't terminate, and the whole program
+will hang. Your only escape is to abort the process with a SIGINT or Ctrl-C,
+which will cause a KeyboardInterrupt and a whole unwinding of all the
+running processes, including the the multitools and multiprocessing magic
+going on behind the scenes.
 
 That makes debugging wayward code a bit more tricky in multi-processing code,
 but the answer is just to page up to your own stacktrace.  You have been
 warned!
 
 Other exceptions are handled a bit more serenely when using multitools though.
-When one process emits an exception, multitools catches it and pretties up
+When one process raises an exception, multitools catches it and pretties up
 the output slightly making it easier to distinguish between your code fouling
 up and the rest of the smoke and mirrors being unwound.  The other processes
 are silently terminated, so control returns to you and you can start debugging
 immediately.
 
-Note you can specify a timeout to get_message() which will raise a Queue.Empty
-exception if no input is received in the timeout, so if you're expecting a
-message you could use that to ensure the process doesn't hang, and politely
-raises an exception to stop, but you need to come up with a sensible value
-for timeout.
+If you don't want get() to block indefinitely, you can specify a timeout (even
+a timeout of 0 if you don't want it to block at all).  It will raise a
+queue.Empty exception if nothing is recieved within the timeout::
+
+    try:
+        m==self.get(timeout=0)
+        # Message received
+        ...
+    except Queue.Empty:
+        # No messages available
+        ...
+
+multitools.ipc.client.Process.get_ids()
+---------------------------------------
+
+Finally we get to explain why you need to set an M_NAME identifier.
+Process.get_ids() takes a name as a string, asks the supervisor for the
+set of processes with that name as their M_NAME, and returns their ids.
+
+This allows you to encapsulate all you need to send a message within
+the sending process, so the main code doesn't need to pull the p_id out
+of the added process and pass it through::
+
+    from multitools.ipc.client import Process
+    from multitools.ipc.host import Supervisor
+    import multitools.ipc as ipc
+
+    class MyProcessOne(Process):
+        M_NAME="My Process One"
+
+        def op(self):
+            m=self.get()
+            print "Hi from MyProcessOne:",m.message
+
+    class MyProcessTwo(Process):
+        M_NAME="My Process Two"
+
+        def op(self, arg):
+            targets=self.get_ids('My Process One')
+            self.send_object(ipc.StringMessage(targets.pop(), arg))
+
+    s=Supervisor()
+    s.add(MyProcessOne())
+    s.add(MyProcessTwo("Test message"))
+    s.supervise()
+
+client.Process.send_message()
+-----------------------------
+
+Note that get_ids() returns a list of ids, because there may be more than
+one process with the same name.  Instead of assuming there's only one id
+(as in the example above) or iterating over the list, you can use
+self.send_message()::
+
+    self.send_message(
+      self.get_ids('target'),ipc.StringMessage,'This is my message'
+    )
+
+send_message() takes a set of ids as the first argument, then the type of
+the message object to send, then the arguments to the message constructor.
+It iterates over the ids for you, creates a message object for each target
+then sends them.
 
 Implementing self.handle_message()
 ----------------------------------
 
-We're nearly done covering how to use the functionality of the supervisor, but
-there's one more thing to mention; a way to structure your process code so
-that you can get the most out of it::
+Once messages are going this way and that way, it can be hard to keep track
+of what you're going to receive.  What happens if a message is received
+while your process is blocking on a get_id() call?  That function, as well
+as self.inpt() will call self.handle_message().  You need to implement
+that function if there's any chance you might get sent a message while
+blocking.  Thankfully, it's not that hard::
 
-    import multitools.ipc.client.Process as Process
+    from multitools.ipc.client import Process
 
     class MyProcess(Process):
         M_NAME="My process"
@@ -301,14 +456,18 @@ that you can get the most out of it::
             for i in xrange(1,10):
                 self.receive()
 
-Thus you can separate your message handling code and other functionality.
 This example prints the first ten messages it receives then terminates.
-One common implementation of op() is::
+
+The other benefit of organising your code like this is you can separate your
+message handling code and other functionality. As your process grows it often
+makes sense to respond to messages and set state in one bit of code, but to
+do the actual work in another.  One common implementation of op() is::
 
     def op(self):
         self.running=True
         while self.running:
             self.receive()
+            ...
 
 Thus handle_message() sets self.running to False when it receives a certain
 message telling it work is done, and the op() terminates.  You can set any
@@ -316,20 +475,20 @@ number of other flags and status values and do work in op() as well as
 calling self.receive, or you can do the work in handle_message() if that
 makes more sense.
 
-self.receive() takes a timeout argument just like self.get_message() which
-will raise Queue.Empty if no message is received within the timeout.
+self.receive() takes a timeout argument just like self.get() which will
+raise Queue.Empty if no message is received within the timeout.
 
-The benefit to organising your code like this is that self.receive() does
-more than just get the next message and pass it to self.handle_message().
-It enables more behind-the-scenes work like calling a non-blocking
-get_id().  This sends a request to the supervisor for the ids that correspond
-to the specified name, but otherwise returns immediately.
+Advanced functionality
+======================
+
+Non-blocking get_ids()
+----------------------
 
 The supervisor can be very busy to begin with as all processes are asking for
-ids, so it may make sense to get your request in early.  If the supervisor
-replies, calling self.receive() will recognise that message and cache the
-result so that if you later call get_ids() in normal blocking mode when you
-want to send a message.
+their first ids, so it may make sense to get your request in early.  If the
+supervisor replies, calling self.receive() will recognise that message and
+cache the result so that if you later call get_ids() in normal blocking mode
+when you want to send a message.
 
 If receive has got the ids when you call blocking get_ids() it will return
 the result immediately, else it will wait until the message comes through
@@ -347,6 +506,39 @@ giving it the ids to use.  That looks like this::
         self.running=True
         while self.running:
             self.receive()
+
+Message objects extended
+------------------------
+
+multitools.ipc defines a handful of useful message objects, which you're
+free to reuse or extend for your own purposes.  All message objects, for the
+purposes of the supervisor should be derived from multitools.ipc.EmptyMessage,
+define a decent __str__() method for logging purposes, and take a target id as
+the first argument to the constructor, for example::
+
+    import multitools.ipc as ipc
+
+    class IntegerMessage(ipc.EmptyMessage):
+        def __init__(self, target, int_):
+            self.int_=int_
+            super(IntegerMessage, self).__init__(target)
+
+        def __str__(self):
+            return "{0}; Value {1}".format(
+          super(IntegerMessage, self).__str__(), self.int_
+        )
+
+If you just want to subclass an existing objects and not change it, say
+an ipc.StringMessage fits your template, but you want to be able to
+distinguish between a plain StringMessage and one that means something to
+you::
+
+    class SpecialStringMessage(ipc.StringMessage):
+        pass
+
+Note that the ipc.FileMessage type in multitools.ipc takes a filename as
+argument, not a File object.  File objects aren't picklable, so can't be
+sent in a message.
 
 RESIDENT Processes
 ------------------
@@ -385,15 +577,15 @@ use.
 
 Wheras, to send an EmtpyMessage to a process named 'My Process'::
 
-    self.send(self.get_ids('My Process'), EmptyMessage)
+    self.send_message(self.get_ids('My Process'), EmptyMessage)
 
 To broadcast it to all available processes just do::
 
-    self.send(multitools.ipc.host.Supervisor.BROADCAST, EmptyMessage)
+    self.send_message(multitools.ipc.host.Supervisor.BROADCAST, EmptyMessage)
 
-Listeners is also a meta-process id.  It's a message sent to only the processes
-that have declared they'd like to listen to that sort of message type.  First
-we'd better explain how to make a listener class::
+Listeners is also a meta-process id.  It identifies message sent to only the
+processes that have declared they'd like to listen to that sort of message
+type.  First we'd better explain how to make a listener class::
 
     class MyProcess(multitools.ipc.client.Process):
         M_NAME='My Process'
@@ -421,7 +613,7 @@ updates a percantage progress indicator, that type of thing.  The class
 defines op and handle_message for you, so you only need to declare your
 method to handle messages::
 
-    class MyLogger(ipc.logger.Logger):
+    class MyLogger(multitools.ipc.logger.Logger):
         M_NAME='My logger'
         LISTEN_TO=[MyMessages]
         def log(self,m):
@@ -430,11 +622,13 @@ method to handle messages::
 To Conclude
 ===========
 
-That concludes a whisle-stop tour of the multitools api.  It's now up to you
-to decide whether it's worth using for your own project - it's aim is to make
-your code simpler and more maintainable, but it does that by hiding some of the
-operation of multiprocessing and its associated libraries.
+That concludes the tour of the multitools api.  It's now up to you to decide
+whether it's worth using for your own project - it's aim is to make your code
+simpler and more maintainable, but it does that by hiding some of the operation
+of multiprocessing and its associated libraries.
 
-Its inspiration was a project that hangs off a slow IO-bound process, so we're
-not sure how quickly it can be made to work - you'll need better hardware than
-we're currently running to test that out though.
+Its inspiration was a project that hangs off a slow IO-bound process, so I'm
+not sure how quickly it can be made to work (you can try setting the interval
+argument to Supervisor.supervise() to something less than the default 0.1s),
+but you'll need better hardware than I'm currently running to test that out
+though.

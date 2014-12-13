@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 
-import multiprocessing, Queue
+import multiprocessing, Queue, time
 import multitools
 
 # Constants for non-specific target ids
@@ -17,7 +17,7 @@ class Supervisor(multitools.ProcessList):
     '''
 
     def __init__(self):
-        self.m_id=hex(id(self))
+        self.p_id=hex(id(self))
         self.connections=[]
         self.listening=dict()
         super(Supervisor, self).__init__()
@@ -27,8 +27,8 @@ class Supervisor(multitools.ProcessList):
         Process subclasses which has the set_pipe() function will have their
         pipe configured for use by the supervisor
         '''
-        process.m_id="{0}_{1}".format(self.m_id, str(len(self.processes)+1))
-        process.sup_id=self.m_id
+        process.p_id="{0}_{1}".format(self.p_id, str(len(self.processes)+1))
+        process.sup_id=self.p_id
         super(Supervisor, self).add(process)
 
         conn=None
@@ -48,6 +48,17 @@ class Supervisor(multitools.ProcessList):
                   'set_pipe(); can\'t send listened to messages without a pipe')
         self.connections.append(conn)
 
+    def poll_message(self):
+        '''
+        Check if any messages have sent output.
+        If they have, return the connection, else return False
+        '''
+        for c in self.connections:
+            if c:
+                if c.poll():
+                    return c
+        return False
+
     def get_message(self, block=True, timeout=None):
         '''
         Scan the processes for output.
@@ -65,20 +76,21 @@ class Supervisor(multitools.ProcessList):
         if block and timeout:
             poll_time=timeout/len([c for c in self.connections if c])/10.0
             for i in range(1,10):
-                for c in [c for c in self.connections if c]:
-                    if c.poll(poll_time):
-                        return c.recv()
+                time.sleep(poll_time)
+                c=self.poll_message()
+                if c:
+                    return c.recv()
             raise Queue.Empty("No processes sent a message")
         elif block:
             while True:
-                for c in [c for c in self.connections if c]:
-                    if c.poll():
-                        return c.recv()
+                c=self.poll_message()
+                if c:
+                    return c.recv()
         else:
             # Block is false
-            for c in [c for c in self.connections if c]:
-                if c.poll():
-                    return c.recv()
+            c=self.poll_message()
+            if c:
+                return c.recv()
             raise Queue.Empty("No processes sent a message")
 
     def __get_conn(self, target):
@@ -95,7 +107,7 @@ class Supervisor(multitools.ProcessList):
             return {c for c in self.connections if c}
         else:
             c=set([self.connections[n] for n in xrange(len(self.processes))
-              if self.processes[n].m_id==target]
+              if self.processes[n].p_id==target]
             )
             if len(c)==0:
                 raise ValueError(
@@ -154,12 +166,12 @@ class Supervisor(multitools.ProcessList):
         '''
         Get the ids for the processes where M_NAME matches the supplied name
 
-        Returns the empty list if no processes match the name
+        Returns the empty set if no processes match the name
         '''
-        ids=[]
+        ids=set()
         for p in self.processes:
             if hasattr(p,'M_NAME') and p.M_NAME == name:
-                ids.append(p.m_id)
+                ids.add(p.p_id)
         return ids
 
     def __handle_message(self, m, prntHandler, objHandler):
@@ -170,7 +182,7 @@ class Supervisor(multitools.ProcessList):
             SupervisorException - If an invalid message is received
         '''
         if isinstance(m, multitools.ipc.EmptyMessage):
-            if m.target==self.m_id:
+            if m.target==self.p_id:
                 if isinstance(m, multitools.ipc.ExceptionMessage):
                     self.terminate()
                     m.rais()
@@ -189,7 +201,7 @@ class Supervisor(multitools.ProcessList):
                         )
                     else:
                         raise SupervisorException("Unknown query message type {0}".format(type(m)))
-                elif isinstance(m, multitools.ipc.StringMessage):
+                elif isinstance(m, multitools.ipc.PrntMessage):
                     if prntHandler:
                         prntHandler(str(m))
                     else:
@@ -206,7 +218,7 @@ class Supervisor(multitools.ProcessList):
                 objHandler(m)
             else:
                 raise SupervisorException("Unknown object sent to supervisor: {0}".format(m))
-        return 1
+        return True
 
     def supervise(self, interval=0.1, prntHandler=None, finishHandler=None, objHandler=None, warn=True):
         '''
@@ -219,7 +231,7 @@ class Supervisor(multitools.ProcessList):
         finishHandler - Optional callable that gets called once everything has
                         terminated
         prntHandler   - Optional callable that gets called whenever a
-                        StringMessage is received from one of the subprocesses
+                        PrntMessage is received from one of the subprocesses
                         (via Process.prnt) instead of allowing it to be printed
                         to screen
         objHandler    - Optional callable to be called when a non-message
@@ -227,17 +239,17 @@ class Supervisor(multitools.ProcessList):
                         your own message types (not derived from EmptyMessage)
                         if you want.
         warn - By default, the method will warn you if your processes don't
-               derive from MultiProcess, thus messages from it can't be
+               derive from client.Process, thus messages from it can't be
                received.  Set this to False to use it with standard
                multiprocessing.Process objects, bearing in mind your
                msgHandler won't be called for messages from those objects.
 
         Raises:
         SupervisorException - raised in case of an invalid message or if no
-                              msgHandler is supplied, anything other than an
+                              objHandler is supplied, anything other than an
                               ExceptionMessage (from raise), QueryMessage
                               (either a GetIdsMessage or from Process.inpt) or
-                              a StringMessage (from Process.prnt) is received
+                              a PrntMessage (from Process.prnt) is received
         '''
         if warn:
             warning=False
@@ -250,7 +262,7 @@ WARNING: Messages from standard multiprocessing.Process objects that don't use
 this class's output Queue will not be received.
 """
         self.start()
-        while self.is_alive():
+        while self.is_alive() or self.poll_message():
             self.join(interval)
             try:
                 while True:
@@ -266,7 +278,7 @@ this class's output Queue will not be received.
                 pass
         for p in self.processes:
             if hasattr(p, 'RESIDENT') and p.RESIDENT:
-                self.send(multitools.ipc.ResidentTermMessage(p.m_id))
+                self.send(multitools.ipc.ResidentTermMessage(p.p_id))
         if finishHandler != None:
             finishHandler()
 
@@ -291,7 +303,7 @@ this class's output Queue will not be received.
 
 ### Test code ############################################################
 
-import unittest, multitools.ipc.client, time
+import unittest, multitools.ipc.client
 
 class Test_Handshake_init(multitools.ipc.QueryMessage):
     pass
@@ -314,9 +326,9 @@ class TestSupervisor(unittest.TestCase):
 
         def handle_message(self,m):
             # Start on first message
-            self.send(self.sup_id,multitools.ipc.StringMessage,'Starting job one') # Helper for sending message objects
+            self.send_message(self.sup_id,multitools.ipc.PrntMessage,'Starting job one') # Helper for sending message objects
             time.sleep(2*TestSupervisor.tick)
-            self.prnt('Finished job one') # Shortcut for sending objects
+            self.prnt('Finished job one') # Shortcut for sending PrntMessage objects
 
     def job_two(self,inpt,output):
         '''
@@ -337,7 +349,7 @@ class TestSupervisor(unittest.TestCase):
 
         def handle_message(self,m):
             time.sleep((self.num*2-5)*TestSupervisor.tick) # 3=1 tick,4=3 ticks
-            self.prnt('Starting job '+str(self.num)) # Shortcut for sending a StringMessage
+            self.prnt('Starting job '+str(self.num))
             time.sleep((12-self.num*3)*TestSupervisor.tick) # 3=1+3 ticks,4=3+0
             self.prnt('Finished job '+str(self.num))
 
@@ -346,7 +358,7 @@ class TestSupervisor(unittest.TestCase):
 
         def op(self):
             time.sleep(TestSupervisor.tick)
-            self.send(BROADCAST, multitools.ipc.StringMessage, "Go go go!")
+            self.send_message(BROADCAST, multitools.ipc.StringMessage, "Go go go!")
 
     # Schedule reference:
     # -1 ticks - job_starter starts
@@ -403,7 +415,7 @@ class TestSupervisor(unittest.TestCase):
     def test_start(self):
         self.p.add_list([self.j1, self.j2])
         self.p.start()
-        j1=self.p.get_ids('Job 1')[0]
+        j1=self.p.get_ids('Job 1').pop()
         self.p.send_object(j1, multitools.ipc.StringMessage(None, "Ok, go!"))
         self.j2i.put("Right, you too!")
         self.assertEqual(str(self.p.get_message()),"Starting job one")
@@ -446,7 +458,7 @@ class TestSupervisor(unittest.TestCase):
             M_NAME="objJob"
 
             def op(self):
-                self.pipe.send("Str object")
+                self.send_object("Str object")
 
         self.p.add_list([self.j1,self.j3,self.j4,objJob()])
         self.p.add(self.job_starter())
@@ -514,11 +526,11 @@ class TestSupervisor(unittest.TestCase):
                 # none, but it'll trigger the id to be cached in the background
                 self.assertEqual(len(opself.get_ids('Agent', block=False)), 0)
                 # Ask again, but blocking until we get the right id now.
-                self.assertEqual(opself.get_ids('Agent'), [opself.m_id])
+                self.assertEqual(opself.get_ids('Agent'), set((opself.p_id,)))
                 # We've now got the Agent id cached, so we can ask for it again without blocking
-                self.assertEqual(opself.get_ids('Agent', block=False), [opself.m_id,])
+                self.assertEqual(opself.get_ids('Agent', block=False), set((opself.p_id,)))
                 # Finally, a negative test
-                self.assertEqual(opself.get_ids('Non existent name'), [])
+                self.assertEqual(opself.get_ids('Non existent name'), set())
 
         self.p.add(agent())
         self.p.supervise()
@@ -529,14 +541,14 @@ class TestSupervisor(unittest.TestCase):
         class agent(multitools.ipc.client.Process):
             M_NAME="Agent"
             def op(opself):
-                opself.send(opself.sup_id, multitools.ipc.GetIdsMessage, opself.m_id, 'Agent')
+                opself.send_message(opself.sup_id, multitools.ipc.GetIdsMessage, opself.p_id, 'Agent')
                 ids = opself.pipe.recv().ids
                 # Safe to assume the next message is a IdsReplyMessage only
                 # because we're the only process here.  If anything else it
                 # liable to talk to you, the suggested API is to use
                 # self.get_ids()
                 self.assertEqual(len(ids), 1)
-                self.assertEqual(ids[0],opself.m_id)
+                self.assertEqual(ids.pop(),opself.p_id)
         self.p.add(agent())
         self.p.supervise()
 
@@ -584,10 +596,10 @@ class TestSupervisor(unittest.TestCase):
             M_NAME='Test Server'
 
             def op(self):
-                self.send(LISTENERS, Test_Handshake_reply)
-                self.send(LISTENERS, multitools.ipc.InputResponseMessage, "Test message")
-                self.send(LISTENERS, multitools.ipc.EmptyMessage) # Should get sent to no one
-                self.send(BROADCAST, multitools.ipc.ResidentTermMessage)
+                self.send_message(LISTENERS, Test_Handshake_reply)
+                self.send_message(LISTENERS, multitools.ipc.InputResponseMessage, "Test message")
+                self.send_message(LISTENERS, multitools.ipc.EmptyMessage) # Should get sent to no one
+                self.send_message(BROADCAST, multitools.ipc.ResidentTermMessage)
 
         self.p.add(TestL1())
         self.p.add(TestL2())
@@ -601,7 +613,7 @@ class TestSupervisor(unittest.TestCase):
                 # NOTE: Note not testing non-blocking prequerying
                 ids=self.get_ids('Agent 2')
                 if len(ids) == 1:
-                    self.send(ids[0], Test_Handshake_init, self.m_id)
+                    self.send_message(ids.pop(), Test_Handshake_init, self.p_id)
                 else:
                     if len(ids) == 0:
                         self.prnt("ERROR: No id got")
@@ -619,7 +631,7 @@ class TestSupervisor(unittest.TestCase):
                 m=self.pipe.recv()
                 if isinstance(m, Test_Handshake_init):
                     # Send a reply back to the source of the handshake
-                    self.send(m.source,Test_Handshake_reply)
+                    self.send_message(m.source,Test_Handshake_reply)
                 else:
                     self.prnt("ERROR: Unexpected message to agent two")
 

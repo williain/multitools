@@ -12,7 +12,7 @@ class Process(multiprocessing.Process):
     deem fit.  Then instantiate it, passing in the values for those arguments
     and pass the object to ProcessList.add() or add_list().
 
-    To implement message passing, write messages using self.send() and
+    To implement message passing, write messages using self.send_message() and
     get them by implementing handle_message() in the targetted process and
     calling self.receive() periodically in your op() there.
     '''
@@ -38,7 +38,18 @@ class Process(multiprocessing.Process):
         '''
         self.pipe=pipe
 
-    def send(self, target_ids, m_type, *args):
+    def send_object(self, object):
+        '''
+        Send an object to the supervisor, to be picked up by the object
+        handler.  See send_message for sending message objects to other
+        processes.
+
+        Arguments:
+        object - The object to send.
+        '''
+        self.pipe.send(object)
+
+    def send_message(self, target_ids, m_type, *args):
         '''
         Message object sender. Arguments:
         target_ids - The recipient ids of the message e.g. the results of a
@@ -48,12 +59,12 @@ class Process(multiprocessing.Process):
                      message constructor
         Examples:
             # Send a DemoMessage instance to the process with M_NAME=='target'
-            self.send(self.get_ids('target'),DemoMessage,"DemoVal")
+            self.send_message(self.get_ids('target'),DemoMessage,"DemoVal")
             # Send a DemoMessage to all registered processes
-            self.send(0,DemoMessage,"DemoVal")
+            self.send_message(0,DemoMessage,"DemoVal")
             # Send a DemoMessage only to no processess except those listening
             # for the type DemoMessage.
-            self.send(1,DemoMessage,"DemoVal")
+            self.send_message(1,DemoMessage,"DemoVal")
         '''
         if hasattr(target_ids, "rfind"):
             # If a single string, put it in a list
@@ -68,7 +79,7 @@ class Process(multiprocessing.Process):
             except TypeError:
                 print "Instantiation error; {0}{1}".format(m_type.__name__,(t,)+args)
                 raise
-            self.pipe.send(m)
+            self.send_object(m)
 
         if len(target_ids)==0:
             raise IndexError("{0} not sent to no targets! Args:{1}".format(m_type.__name__, str(args)))
@@ -115,9 +126,9 @@ class Process(multiprocessing.Process):
         pick up these messages and print them itself, so this function can be
         used as a drop-in replacement for print.
         '''
-        self.send(self.sup_id, multitools.ipc.StringMessage,
+        self.send_object(multitools.ipc.PrntMessage(self.sup_id,
           " ".join([str(arg) for arg in args])
-        )
+        ))
 
     def inpt(self, prompt=None):
         '''
@@ -126,7 +137,9 @@ class Process(multiprocessing.Process):
         process, and blocks this function call too (although handle_message
         will be invoked for any messages received while blocking).
         '''
-        self.pipe.send(multitools.ipc.InputMessage(self.sup_id,self.m_id,prompt))
+        self.send_object(
+          multitools.ipc.InputMessage(self.sup_id,self.p_id,prompt)
+        )
         while True:
             m=self.pipe.recv()
             if isinstance(m,multitools.ipc.InputResponseMessage):
@@ -162,7 +175,9 @@ class Process(multiprocessing.Process):
         if not name in self.ids:
             self.receive_all()
             if not name in self.ids:
-                self.send(self.sup_id, multitools.ipc.GetIdsMessage, self.m_id, name)
+                self.send_object(
+                    multitools.ipc.GetIdsMessage(self.sup_id, self.p_id, name)
+                )
                 self.queries.append(name)
                 if block==False:
                     return set()
@@ -173,31 +188,36 @@ class Process(multiprocessing.Process):
         return self.ids[name]
 
     def __wrap_op(self, *args, **kwargs):
-        # Preassigned exception message in case of truly exceptional
-        # circumstances (e.g. MemoryError)
-        crash=multitools.ipc.ExceptionMessage(self.sup_id, self.m_id,
-          RuntimeError("Unable to process exception; aborting!")
-        )
-        try:
-            self.op(*args, **kwargs)
-        except Exception as e:
-            # Hack to preserve the original traceback in the exception message
-            if self.pipe:
+        if not hasattr(self,'p_id'):
+            # Not a communicative process
+            self.op(*args,**kwargs)
+        else:
+            # Preassigned exception message in case of truly exceptional
+            # circumstances (e.g. MemoryError)
+            crash=multitools.ipc.ExceptionMessage(self.sup_id, self.p_id,
+              RuntimeError("Unable to process exception; aborting!")
+            )
+            try:
+                self.op(*args, **kwargs)
+            except Exception as e:
+                # Preserve the original traceback in the exception message
                 try:
                     (_, _, tb) = sys.exc_info()
-                    e.args=(e.args[:-1])+(str(e.args[-1])+"\nOriginal traceback:\n"+"".join(traceback.format_tb(tb)),)
-                    self.pipe.send(multitools.ipc.ExceptionMessage(
-                      self.sup_id, self.m_id, e
+                    e.args=(e.args[:-1])+(str(e.args[-1])+
+                      "\nOriginal traceback:\n"+"".join(
+                        traceback.format_tb(tb)
+                      ),
+                    )
+                    self.send_object(multitools.ipc.ExceptionMessage(
+                      self.sup_id, self.p_id, e
                     ))
                 except Exception as e:
                     try:
-                        self.pipe.send(multitools.ipc.ExceptionMessage(
-                          self.sup_id, self.m_id, e
+                        self.send_object(multitools.ipc.ExceptionMessage(
+                          self.sup_id, self.p_id, e
                         ))
                     except Exception:
-                        self.pipe.send(crash)
-            else:
-                raise
+                        self.send_object(crash)
         if self.pipe:
             self.pipe.close()
 
@@ -236,7 +256,7 @@ class Process(multiprocessing.Process):
             except IndexError:
                 raise multitools.ipc.SupervisorException(
                   "{0}: IdsReplyMessage received for no query".format(
-                    self.m_id
+                    self.p_id
                   )
                 )
         else:
@@ -280,7 +300,7 @@ class TestProcess(unittest.TestCase):
         class badP(Process):
             M_NAME="BadP"
             sup_id='supervisor'
-            m_id='process_1'
+            p_id='process_1'
             def op(self):
                 super(badP,self).op() # Uh-oh!
 
@@ -296,7 +316,7 @@ class TestProcess(unittest.TestCase):
         class testP(Process):
             M_NAME="TestP"
             sup_id='supervisor'
-            m_id='process_2'
+            p_id='process_2'
             def op(self):
                 time.sleep(1)
 
@@ -310,7 +330,7 @@ class TestProcess(unittest.TestCase):
         class testProcess(Process):
             M_NAME='testProcess'
             sup_id='supervisor'
-            m_id='process_testprnt'
+            p_id='process_testprnt'
             def op(self):
                 self.prnt('Test prnt')
 
@@ -321,7 +341,7 @@ class TestProcess(unittest.TestCase):
         tp.join()
         m=this.recv()
         self.assertEqual(str(m), 'Test prnt')
-        self.assertIs(type(m),multitools.ipc.StringMessage)
+        self.assertIs(type(m),multitools.ipc.PrntMessage)
         self.assertFalse(this.poll())
 
     def testInpt(self):
