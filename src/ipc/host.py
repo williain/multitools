@@ -414,7 +414,7 @@ class TestSupervisor(unittest.TestCase):
         self.p.start()
         self.p.send_object(BROADCAST, multitools.ipc.StringMessage(None, "Ok, go!"))
         self.assertEqual(str(self.p.get_message()),"Starting job one")
-        self.assertEqual(str(self.p.get_message(timeout=2,tick=self.tick)),"Starting job 3")
+        self.assertEqual(str(self.p.get_message(timeout=2,tick=self.tick/2)),"Starting job 3")
         self.assertEqual(str(self.p.get_message()),"Finished job one")
         time.sleep(4*TestSupervisor.tick)
         self.assertEqual(str(self.p.get_message(block=False)),"Finished job 3")
