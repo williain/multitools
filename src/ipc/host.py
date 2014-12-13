@@ -59,14 +59,18 @@ class Supervisor(multitools.ProcessList):
                     return c
         return False
 
-    def get_message(self, block=True, timeout=None):
+    def get_message(self, block=True, timeout=None, tick=None):
         '''
         Scan the processes for output.
         Options:
-            block - Block until output is given.  If False, raises Queue.Empty
-                    if no processes have raised output, and disregards timeout.
-            timeout - If block is True, wait per timeout, and raise Queue.Empty
-                      only if all processes provided no output during this time.
+            block   - Block until output is given.  If False, raises
+                      Queue.Empty if no processes have raised output, and
+                      disregards timeout.
+            timeout - If block is True, wait per timeout, and raise
+                      Queue.Empty only if all processes provided no output
+                      during this time.
+            tick -    If blocking with a timeout, how long to wait between
+                      checks.  Defaults to 1/10th of the timeout.
         Raises:
             Queue.Empty - If non-blocking or timeout was exceeded and no
                           messages were received.
@@ -74,12 +78,15 @@ class Supervisor(multitools.ProcessList):
             The message sent (normally expected to be a Message object)
         '''
         if block and timeout:
-            poll_time=timeout/len([c for c in self.connections if c])/10.0
-            for i in range(1,10):
-                time.sleep(poll_time)
+            if tick==None:
+                tick=timeout/10.0
+            time_s=time.time()
+            while time.time()<time_s+timeout:
                 c=self.poll_message()
                 if c:
                     return c.recv()
+                else:
+                    time.sleep(tick)
             raise Queue.Empty("No processes sent a message")
         elif block:
             while True:
@@ -407,7 +414,7 @@ class TestSupervisor(unittest.TestCase):
         self.p.start()
         self.p.send_object(BROADCAST, multitools.ipc.StringMessage(None, "Ok, go!"))
         self.assertEqual(str(self.p.get_message()),"Starting job one")
-        self.assertEqual(str(self.p.get_message(timeout=2)),"Starting job 3")
+        self.assertEqual(str(self.p.get_message(timeout=2,tick=self.tick)),"Starting job 3")
         self.assertEqual(str(self.p.get_message()),"Finished job one")
         time.sleep(4*TestSupervisor.tick)
         self.assertEqual(str(self.p.get_message(block=False)),"Finished job 3")
