@@ -296,6 +296,51 @@ class TestProcess(unittest.TestCase):
     def testInit(self):
         self.assertRaises(NotImplementedError,Process)
 
+    def test_set_pipe(self):
+        pass
+
+    def test_send_object(self):
+        pass
+
+    def test_send_message(self):
+        pass
+
+    def test_get(self):
+        pass
+
+    def testPrnt(self):
+        class testProcess(Process):
+            M_NAME='testProcess'
+            sup_id='supervisor'
+            p_id='process_testprnt'
+            def op(self):
+                self.prnt('Test prnt')
+
+        tp=testProcess()
+        (this, that)=multiprocessing.Pipe()
+        tp.set_pipe(that)
+        tp.start()
+        tp.join()
+        m=this.recv()
+        self.assertEqual(str(m), 'Test prnt')
+        self.assertIs(type(m),multitools.ipc.PrntMessage)
+        self.assertFalse(this.poll())
+
+    def testInpt(self):
+        # Can't be easily tested automatically since it blocks on user input
+        # Thankfully it's a two liner, and should be pretty obvious if it
+        # doesn't work.
+        pass
+
+    def test_get_ids(self):
+        pass
+
+    def test_receive(self):
+        pass
+
+    def test_receive_all(self):
+        pass
+
     def testOp(self):
         class badP(Process):
             M_NAME="BadP"
@@ -325,30 +370,6 @@ class TestProcess(unittest.TestCase):
         tp.start()
         tp.join()
         self.assertGreaterEqual(time.time()+1, start)
-
-    def testPrnt(self):
-        class testProcess(Process):
-            M_NAME='testProcess'
-            sup_id='supervisor'
-            p_id='process_testprnt'
-            def op(self):
-                self.prnt('Test prnt')
-
-        tp=testProcess()
-        (this, that)=multiprocessing.Pipe()
-        tp.set_pipe(that)
-        tp.start()
-        tp.join()
-        m=this.recv()
-        self.assertEqual(str(m), 'Test prnt')
-        self.assertIs(type(m),multitools.ipc.PrntMessage)
-        self.assertFalse(this.poll())
-
-    def testInpt(self):
-        # Can't be easily tested automatically since it blocks on user input
-        # Thankfully it's a two liner, and should be pretty obvious if it
-        # doesn't work.
-        pass
 
 if __name__=='__main__':
     unittest.main()
