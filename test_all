@@ -1,0 +1,23 @@
+pass=0
+for script in src/*.py; do
+    echo $script
+    python $script $@
+    if [[ $? != 0 ]]
+    then
+        pass=1
+    fi
+done
+for script in src/ipc/*.py; do
+    echo $script
+    python $script $@
+    if [[ $? != 0 ]]
+    then
+        pass=1
+    fi
+done
+if [[ $pass == 0 ]]
+then
+    echo "ALL OK"
+else
+    echo "FAILURE"
+fi

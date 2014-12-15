@@ -24,6 +24,7 @@ class Process(multiprocessing.Process):
         if type(self) is Process:
             raise NotImplementedError("Don't instantiate the multitools.Process interface directly")
         else:
+            # TODO Move this check to the supervisor, and guard for non-set p_ids etc. before every use
             if not hasattr(self, 'M_NAME'):
                 print "WARNING: Must set a string 'M_NAME' for your Process"
             self.queries=collections.deque()
@@ -235,7 +236,7 @@ class Process(multiprocessing.Process):
         Raises:
           Queue.Empty - If not blocking, and no messages are queued.
         '''
-        self.__handle_message(self.get(timeout=timeout, sleep=sleep))
+        return self.__handle_message(self.get(timeout=timeout, sleep=sleep))
 
     def receive_all(self):
         '''
@@ -292,31 +293,87 @@ class Process(multiprocessing.Process):
 
 import unittest, time
 
+class FakeMessage(object):
+    def __init__(self, target, val):
+        self.target=target
+        self.val=val
+
 class TestProcess(unittest.TestCase):
+    class TestP(Process):
+        M_NAME=None
+        pass
+
     def testInit(self):
         self.assertRaises(NotImplementedError,Process)
+        p=self.TestP() # Subclasses don't error
+
 
     def test_set_pipe(self):
-        pass
+        p=self.TestP()
+        a=object()
+        p.set_pipe(a)
+        self.assertIs(p.pipe, a)
 
     def test_send_object(self):
-        pass
+        class TestP(Process):
+            M_NAME=None
+            def op(self):
+                self.send_object(int(1))
+
+        p=TestP()
+        (this, that)=multiprocessing.Pipe()
+        p.set_pipe(that)
+        p.start()
+        p.join()
+        m=this.recv()
+        self.assertIsInstance(m,int)
+        self.assertEquals(m, 1)
 
     def test_send_message(self):
-        pass
+        class TestP(Process):
+            M_NAME=None
+            def op(self_):
+                self_.send_message([1234], FakeMessage, "value")
+
+        p=TestP()
+        (this, that)=multiprocessing.Pipe()
+        p.set_pipe(that)
+        p.start()
+        p.join()
+        m=this.recv()
+        self.assertIsInstance(m,FakeMessage)
+        self.assertEquals(m.target, 1234)
+        self.assertEquals(m.val,"value")
 
     def test_get(self):
-        pass
+        class TestP(Process):
+            M_NAME=None
+            def op(self_):
+                self.assertEquals(self_.get().val,"Test message")
+                self.assertRaises(Queue.Empty,self_.get,timeout=0)
+                start=time.time()
+                timeout=1.5
+                self.assertRaises(Queue.Empty,self_.get,timeout=timeout)
+                dur=time.time()-start
+                self.assertGreaterEqual(dur,timeout)
+                self.assertLess(dur-timeout,timeout/5.0)
+
+        tp=TestP()
+        (this,that)=multiprocessing.Pipe()
+        tp.set_pipe(that)
+        tp.start()
+        this.send(FakeMessage(1234,"Test message"))
+        tp.join()
 
     def testPrnt(self):
-        class testProcess(Process):
+        class TestP(Process):
             M_NAME='testProcess'
             sup_id='supervisor'
             p_id='process_testprnt'
             def op(self):
                 self.prnt('Test prnt')
 
-        tp=testProcess()
+        tp=TestP()
         (this, that)=multiprocessing.Pipe()
         tp.set_pipe(that)
         tp.start()
@@ -333,13 +390,83 @@ class TestProcess(unittest.TestCase):
         pass
 
     def test_get_ids(self):
-        pass
+        class TestP(Process):
+            M_NAME=None
+            sup_id=None
+            p_id=None
+            def op(self_):
+                self.assertEquals(self_.get_ids("Test name",block=False),None)
+                ids=self_.get_ids("Test name 2")
+                self.assertEquals(len(ids),1)
+                self.assertEquals(ids.pop(),"1234")
+
+        tp=TestP()
+        (this, that)=multiprocessing.Pipe()
+        tp.set_pipe(that)
+        tp.start()
+        self.assertEquals(this.recv().name,"Test name")
+        this.send(multitools.ipc.IdsReplyMessage(set("1234"),"test id"))
 
     def test_receive(self):
-        pass
+        class TestP(Process):
+            M_NAME=None
+            def op(self_,terminated):
+                self_.terminated=terminated
+                self_.messages=0
+                while self_.receive():
+                    pass
+
+            def handle_message(self_,m):
+                self.assertIsInstance(m,FakeMessage)
+                if self_.messages==0:
+                    self.assertEquals(m.val,"Test message")
+                    self_.messages+=1
+                if m.val=='quit':
+                    if self_.messages == 1:
+                        self_.terminated.value=True
+                        return False
+                return True
+
+        terminated=multiprocessing.Value('b',False)
+        p=TestP(terminated)
+        (this,that)=multiprocessing.Pipe()
+        p.set_pipe(that)
+        p.start()
+        this.send(FakeMessage("1234","Test message"))
+        this.send(FakeMessage("quit","quit"))
+        p.join()
+        self.assertEquals(terminated.value,True)
 
     def test_receive_all(self):
-        pass
+        total=200
+        class TestP(Process):
+            M_NAME=None
+            def op(self_,finished):
+                self_.messages=0
+                self_.finished=finished
+                while self_.receive():
+                    pass
+
+            def handle_message(self_,m):
+                self.assertIsInstance(m,FakeMessage)
+                if self_.messages==total:
+                    self.assertEquals(m.val,"Test message "+str(total))
+                    self_.finished.value=True
+                    return False
+                else:
+                    self.assertEquals(m.val,"Test message "+str(self_.messages))
+                self_.messages+=1
+                return True
+
+        finished=multiprocessing.Value('b',False)
+        p=TestP(finished)
+        (this,that)=multiprocessing.Pipe()
+        p.set_pipe(that)
+        p.start()
+        for i in range(total+1):
+            this.send(FakeMessage("1234","Test message "+str(i)))
+        p.join()
+        self.assertEquals(finished.value,True)
 
     def testOp(self):
         class badP(Process):

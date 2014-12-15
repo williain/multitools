@@ -8,17 +8,32 @@ Introduction
 Python has a fairly comprehensive set of multiprocessing libraries to help
 you run multiple processes in parallel and collect the results.  Multitools
 is based on those libraries, and aims to make your life easier especially
-if you need the processes to work together - it provides an event model based
-on passing messages between them.
+if you need the processes to work together. It adds the following features
+to the standard libs:
 
-A quick recap
-=============
+- Simpler argument passing to process objects
+
+- A collection to run all processes together
+
+- A supervisor object which gives you:
+
+    - Automatic connections to allow you to pass picklable objects out
+      (rather than having to use multiprocessing.Value)
+
+    - A messaging system letting you pass data between concurrent processes
+
+    - A process discovery API letting you plug in and remove processes
+      with less code churn
+
+    - A mechanism for processes to declare interesting message types,
+      making the receiver declare what messages it responds to, rather
+      than the sender needing to know the names of receptive processes
+
+Multiprocessing - a quick recap
+===============================
+
 You don't need this library if you're happy with the standard multiprocessing
-library, so it's worth going back to looking how to use that.
-
-Using functions
----------------
-::
+library, so it's worth going back to looking how to use that::
 
     import multiprocessing
 
@@ -34,11 +49,12 @@ Using functions
 The above is a simple example of how you can run code in a separate process,
 using dummy code that wouldn't actually be any quicker to run in parallel.
 
-Using classes
--------------
-::
+You can also derive your own process from multiprocessing.Process, so you
+don't need to pass those target and args arguments.  You'll need to pass
+your arguments to the Process constructor though, so in terms of boiler
+plate code, you're swapping one lot for the other.
 
-    import multiprocessing
+Replace the definition of op() with this class declaration::
 
     class MyProcess(multiprocessing.Process):
         def __init__(self, result, arg_one, arg_two):
@@ -50,15 +66,9 @@ Using classes
         def run(self):
             self.result.value=self.arg_one*self.arg_two
 
-    val=multiprocessing.Value('i',0)
-    p=MyProcess(val,1234,5678)
-    p.start()
-    p.join()
-    print "Result",val.value
+You can instantiate yor object now using easier argument passing::
 
-This is the same as the previous example, but done by subclassing your own
-process class.  The code to run the process is simpler, but there's more
-boilerplate involved.  YMMV.
+    p=MyProcess(val,1234,5678)
 
 Using multitools
 ================
@@ -66,26 +76,22 @@ Using multitools
 ProcessList
 -----------
 
-To implement the same example a third time, but this time using multitools.ProcessList, do::
+ProcessList is a collection that allows you to add() multiprocessing.Process
+objects.  Once you've added them all you can start() them all together, join()
+them, check their is_alive() status or even terminate() them as a unit (see
+the warnings in the multiprocessing docs about using terminate() on Process
+objects though).
 
-    import multiprocessing
-    import multitools
+To implement the same example a third time, but this time using
+multitools.ProcessList, import multitools and add::
 
-    def op(result, arg_one, arg_two):
-        result.value=arg_one*arg_two
-
-    val=multiprocessing.Value('i',0)
-    p=multiprocessing.Process(target=op, args=[val,1234,5678])
     pl=multitools.ProcessList()
     pl.add(p)
-    pl.start()
-    pl.join()
-    print "Result",val.value
 
-In this example, using multitools.ProcessList just adds two lines and achieves
-nothing extra.  If you have more that one process to run though, ProcessList
-gives you power to call start() and join() once to start() and join() all the
-processes you've add()ed.  For example::
+Now use pl.start() and pl.join() just as we previously started and joined
+the Process object directly.  With just one process added you don't gain
+anything from ProcessList, but if you run more than one process concurrently
+with your main process, you can save typing.  For example::
 
     import multiprocessing
     import multitools
@@ -109,15 +115,11 @@ processes you've add()ed.  For example::
 To do the same without using multitools.ProcessList, you'd need to run
 Process.start() and Process.join() on all of them.  That's all ProcessList
 does; it collects a set of multiprocessing.Processes and allows you to run them
-together.  It's quite a simple thing, but it's the foundation for the rest of
-the multitools libraries.
+together.
 
 Introducing ipc.client.Process
 ------------------------------
-::
-
-    import multiprocessing
-    import multitools, multitools.ipc.client
+You can declare these Process objects and instantiate them like this::
 
     class MyProcess(multitools.ipc.client.Process):
         M_NAME=None
@@ -125,21 +127,21 @@ Introducing ipc.client.Process
         def op(self, result, arg_one, arg_two):
             result.value=arg_one*arg_two
 
-    pl=multitools.ProcessList()
-    val=multiprocessing.Value('i',0)
-    pl.add(MyProcess(val,1234,5678))
-    pl.start()
-    pl.join()
-    print "Result",val.value
+    p=MyProcess(val,1234,5678)
 
-This example is more like the original class example, but it needs slightly
-less boilerplate code to make it work.  multitools.ipc.client.Process inherits
-from multiprocessing.Process, so it works in much the same way althogh note
-that your method is renamed back to op(), not run() this time.
+multitools.ipc.client.Process inherits from multiprocessing.Process, so it
+works in much the same way althogh note that your method is renamed back to
+op(), not run() this time.
+
+This Process type constructor automatically accepts arguments to pass through
+to self.op, so you don't need to write that code yourself.  Note that if you
+pass a bad argument signature to the constructor, you'll get an exception
+when you start() it (like the original function-based example) not when you
+construct it (like the class-based example).
 
 If you do overload run() you'd need to put the code that takes the args in the
 class's __init__, and disable much of the supervisor functionality that
-follows - i.e. you might as well use multiprocessing.Process directly.
+follows - i.e. you might as well derive from multiprocessing.Process directly.
 
 Note the M_NAME constant defined (as None) there.  That's just there to prevent
 a warning output by the Process constructor.  We're slightly abusing its
@@ -608,9 +610,13 @@ Loggers
 Loggers are just resident processes that listen to messages and perform some
 action on them (defined as 'logging' them) but nothing else.  It's designed
 as a process that reports on activity, records it to file or screen, or
-updates a percantage progress indicator, that type of thing.  The class
-defines op and handle_message for you, so you only need to declare your
-method to handle messages::
+updates a percantage progress indicator, that type of thing.
+
+There is a base class defined in multitools.ipc.logger, called Logger().
+The class defines op and handle_message for you, so you only need to
+declare your method to handle messages::
+
+    import multitools.ipc.logger
 
     class MyLogger(multitools.ipc.logger.Logger):
         M_NAME='My logger'
@@ -622,9 +628,10 @@ To Conclude
 ===========
 
 That concludes the tour of the multitools api.  It's now up to you to decide
-whether it's worth using for your own project - it's aim is to make your code
-simpler and more maintainable, but it does that by hiding some of the operation
-of multiprocessing and its associated libraries.
+whether it's worth using for your own project - you can still do anything you
+can do with multiprocessing.Process with multitools.ipc.client.Process, but
+additionally when used with multitools.ipc.host.Supervisor, you can write
+communicative code that's simpler and more maintainable.
 
 Its inspiration was a project that hangs off a slow IO-bound process, so I'm
 not sure how quickly it can be made to work (you can try setting the interval
