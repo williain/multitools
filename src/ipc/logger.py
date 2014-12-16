@@ -1,4 +1,5 @@
 import multitools.ipc.client
+import multitools.ipc
 
 class Logger(multitools.ipc.client.Process):
     RESIDENT=True
@@ -16,6 +17,8 @@ class Logger(multitools.ipc.client.Process):
 
 class DebugLogger(Logger):
     M_NAME="Debug Logger"
+    LISTEN_TO=[multitools.ipc.EmptyMessage]
+
     def log(self, m):
         self.prnt(m)
 

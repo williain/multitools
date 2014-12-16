@@ -17,23 +17,23 @@ to the standard libs:
 
 - A supervisor object which gives you:
 
-    - Automatic connections to allow you to pass picklable objects out
-      (rather than having to use multiprocessing.Value)
+  - Automatic connections to allow you to pass picklable objects out
+    (rather than having to use multiprocessing.Value)
 
-    - A messaging system letting you pass data between concurrent processes
+  - A messaging system letting you pass data between concurrent processes
 
-    - A process discovery API letting you plug in and remove processes
-      with less code churn
+  - A process discovery API letting you plug in and remove processes with
+    less code churn
 
-    - A mechanism for processes to declare interesting message types,
-      making the receiver declare what messages it responds to, rather
-      than the sender needing to know the names of receptive processes
+  - A mechanism for processes to declare interesting message types, making
+    the receiver declare what messages it responds to, rather than the
+    sender needing to know the names of receptive processes
 
 Multiprocessing - a quick recap
 ===============================
 
 You don't need this library if you're happy with the standard multiprocessing
-library, so it's worth going back to looking how to use that::
+library, so it's worth going back to looking at how to use that::
 
     import multiprocessing
 

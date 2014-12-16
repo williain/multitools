@@ -144,7 +144,7 @@ class Process(multiprocessing.Process):
         while True:
             m=self.pipe.recv()
             if isinstance(m,multitools.ipc.InputResponseMessage):
-                return str(m)
+                return m.message
             else:
                 self.__handle_message(m)
 
