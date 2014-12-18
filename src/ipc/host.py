@@ -1,6 +1,11 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
+from __future__ import print_function
 
-import multiprocessing, Queue, time
+import multiprocessing, time
+try:
+    import queue
+except ImportError:
+    import Queue as queue
 import multitools
 
 # Constants for non-specific target ids
@@ -64,15 +69,15 @@ class Supervisor(multitools.ProcessList):
         Scan the processes for output.
         Options:
             block   - Block until output is given.  If False, raises
-                      Queue.Empty if no processes have raised output, and
+                      queue.Empty if no processes have raised output, and
                       disregards timeout.
             timeout - If block is True, wait per timeout, and raise
-                      Queue.Empty only if all processes provided no output
+                      queue.Empty only if all processes provided no output
                       during this time.
             tick -    If blocking with a timeout, how long to wait between
                       checks.  Defaults to 1/10th of the timeout.
         Raises:
-            Queue.Empty - If non-blocking or timeout was exceeded and no
+            queue.Empty - If non-blocking or timeout was exceeded and no
                           messages were received.
         Returns:
             The message sent (normally expected to be a Message object)
@@ -87,7 +92,7 @@ class Supervisor(multitools.ProcessList):
                     return c.recv()
                 else:
                     time.sleep(tick)
-            raise Queue.Empty("No processes sent a message")
+            raise queue.Empty("No processes sent a message")
         elif block:
             while True:
                 c=self.poll_message()
@@ -98,7 +103,7 @@ class Supervisor(multitools.ProcessList):
             c=self.poll_message()
             if c:
                 return c.recv()
-            raise Queue.Empty("No processes sent a message")
+            raise queue.Empty("No processes sent a message")
 
     def __get_conn(self, target):
         '''
@@ -113,7 +118,7 @@ class Supervisor(multitools.ProcessList):
         elif target==BROADCAST:
             return {c for c in self.connections if c}
         else:
-            c=set([self.connections[n] for n in xrange(len(self.processes))
+            c=set([self.connections[n] for n in range(len(self.processes))
               if self.processes[n].p_id==target]
             )
             if len(c)==0:
@@ -195,7 +200,7 @@ class Supervisor(multitools.ProcessList):
                     m.rais()
                 elif isinstance(m, multitools.ipc.QueryMessage):
                     if isinstance(m, multitools.ipc.InputMessage):
-                        if m.prompt: print m.prompt
+                        if m.prompt: print(m.prompt)
                         s = raw_input() # Blocks til user hits enter
                         self.send(multitools.ipc.InputResponseMessage(
                           m.source, s)
@@ -212,7 +217,7 @@ class Supervisor(multitools.ProcessList):
                     if prntHandler:
                         prntHandler(str(m))
                     else:
-                        print m
+                        print(m)
                 else:
                     # Some other Message type
                     raise SupervisorException("Unknown message type {0}".format(type(m)))
@@ -264,10 +269,9 @@ class Supervisor(multitools.ProcessList):
                 if not hasattr(p, 'set_pipe'):
                     warning=True
             if warning:
-                print """
-WARNING: Messages from standard multiprocessing.Process objects that don't use
-this class's output Queue will not be received.
-"""
+                print("""
+WARNING: Messages from standard multiprocessing.Process objects that don't acccept and use the pipe object via set_pipe() not be received.
+""")
         self.start()
         while self.is_alive() or self.poll_message():
             self.join(interval)
@@ -280,8 +284,10 @@ this class's output Queue will not be received.
                         ):
                             self.terminate()
                     except SupervisorException as e:
-                        print "ERROR: Supervisor; Invalid message received; {0}:\n{1}".format(str(m),str(e))
-            except Queue.Empty:
+                        print("ERROR: Supervisor; Invalid message received;"+
+                          "{0}:\n{1}".format( str(m),str(e) )
+                        )
+            except queue.Empty:
                 pass
         for p in self.processes:
             if hasattr(p, 'RESIDENT') and p.RESIDENT:
@@ -299,7 +305,7 @@ this class's output Queue will not be received.
         messages can no longer be sent to them.
         '''
         alive=False
-        for n in xrange(len(self.processes)):
+        for n in range(len(self.processes)):
             if self.processes[n].is_alive():
                 if (hasattr(self.processes[n], 'RESIDENT') and
                   self.processes[n].RESIDENT == False):
@@ -439,7 +445,7 @@ class TestSupervisor(unittest.TestCase):
         self.p.join()
         self.assertEqual(str(self.p.get_message()),"Starting job one")
         self.assertEqual(str(self.p.get_message()),"Finished job one")
-        self.assertRaises(Queue.Empty, self.p.get_message, block=False)
+        self.assertRaises(queue.Empty, self.p.get_message, block=False)
         self.assertEqual(self.j2o.get(),"Starting job two")
 
     def test_is_alive(self):
@@ -493,27 +499,27 @@ class TestSupervisor(unittest.TestCase):
             def prntHandler(self,m):
                 if self.order >= len(self.messages):
                     self.passed=False
-                    print "MESSAGE FAIL: Expected {0} messages, got {1} (extra message was '{2}')".format(len(self.messages),self.order,str(m))
+                    print("MESSAGE FAIL: Expected {0} messages, got {1} (extra message was '{2}')".format(len(self.messages),self.order,str(m)))
                 elif self.messages[self.order] != str(m):
                     self.passed=False
-                    print "MESSAGE FAIL: Expected '{0}' got '{1}'".format(self.messages[self.order],str(m))
+                    print("MESSAGE FAIL: Expected '{0}' got '{1}'".format(self.messages[self.order],str(m)))
                 self.order+=1
 
             def finishedHandler(self):
                 if self.order!=len(self.messages):
                     self.passed=False
-                    print "MESSAGE FAIL: Expected {0} messages, got {1}".format(len(self.messages), self.order)
+                    print("MESSAGE FAIL: Expected {0} messages, got {1}".format(len(self.messages), self.order))
                 if self.obj!=len(self.objects):
                     self.passed=False
-                    print "OBJ FAIL: Expected {0} objects, got {1}".format(len(self.objects), self.obj)
+                    print("OBJ FAIL: Expected {0} objects, got {1}".format(len(self.objects), self.obj))
 
             def objHandler(self,m):
                 if self.obj > len(self.objects):
                     self.passed=False
-                    print "OBJ FAIL: Expected {0} objects, got {1} (extra object str was '{2}')".format(len(self.objects),self.obj,str(m))
+                    print("OBJ FAIL: Expected {0} objects, got {1} (extra object str was '{2}')".format(len(self.objects),self.obj,str(m)))
                 elif m != self.objects[self.obj]:
                     self.passed=False
-                    print "OBJ FAIL: Expected object '{0}' got '{1}'".format(self.objects[self.obj])
+                    print("OBJ FAIL: Expected object '{0}' got '{1}'".format(self.objects[self.obj]))
                 self.obj+=1
 
         handler=handlers()
@@ -669,7 +675,7 @@ class TestSupervisor(unittest.TestCase):
 
         def testHandler(m):
             if m.startswith('ERROR:'):
-                print m
+                print(m)
             else:
                 self.assertEqual(m, "Test OK!")
 

@@ -1,14 +1,14 @@
 ===========
 Multitools
 ===========
-A suite of python 2.x tools to make working with multiple simultaneously running processes easier and more powerful.
+A suite of python 2/3 tools to make working with multiple simultaneously running processes easier and more powerful.
 
-It's based on the multiprocessing library.  Oh, and it needs python 2.7 or better.
+It's based on the multiprocessing library.  Needs python 2.7 or better.
 
 Building it
 ===========
 
-This is distributed as a disttools library, so it install it you'll need root
+This is distributed as a disttools library, so to install it you'll need root
 rights and to be able to execute (in the root directory of the repo)::
 
     # python setup.py install

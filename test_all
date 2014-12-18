@@ -1,7 +1,24 @@
+#!/usr/bin/env bash
+PYTHON=/usr/bin/python
+ARGS=""
+while getopts ":p:" opt; do
+    case $opt in
+        p)
+            PYTHON=$OPTARG
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument." >&2
+            exit 1
+            ;;
+        *)
+            ARGS="$ARGS -$OPTARG"
+    esac
+done
+
 pass=0
 for script in src/*.py; do
     echo $script
-    python $script $@
+    $PYTHON $script $ARGS
     if [[ $? != 0 ]]
     then
         pass=1
@@ -9,7 +26,7 @@ for script in src/*.py; do
 done
 for script in src/ipc/*.py; do
     echo $script
-    python $script $@
+    $PYTHON $script $ARGS
     if [[ $? != 0 ]]
     then
         pass=1

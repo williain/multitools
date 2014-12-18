@@ -1,6 +1,11 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
+from __future__ import print_function
 
-import sys, multiprocessing, traceback, collections, Queue
+import sys, multiprocessing, traceback, collections
+try:
+    import queue
+except ImportError:
+    import Queue as queue
 import multitools.ipc 
 
 class Process(multiprocessing.Process):
@@ -26,7 +31,7 @@ class Process(multiprocessing.Process):
         else:
             # TODO Move this check to the supervisor, and guard for non-set p_ids etc. before every use
             if not hasattr(self, 'M_NAME'):
-                print "WARNING: Must set a string 'M_NAME' for your Process"
+                print("WARNING: Must set a string 'M_NAME' for your Process")
             self.queries=collections.deque()
             self.ids={}
             self.pipe=None
@@ -78,7 +83,7 @@ class Process(multiprocessing.Process):
             try:
                 m=m_type(t, *args)
             except TypeError:
-                print "Instantiation error; {0}{1}".format(m_type.__name__,(t,)+args)
+                print("Instantiation error; {0}{1}".format(m_type.__name__,(t,)+args))
                 raise
             self.send_object(m)
 
@@ -98,7 +103,7 @@ class Process(multiprocessing.Process):
                     times (i.e. sleep=timeout/10)
 
         Raises:
-          Queue.Empty - If timed out, and no messages are queued.
+          queue.Empty - If timed out, and no messages are queued.
         '''
 
         if timeout==None:
@@ -116,7 +121,7 @@ class Process(multiprocessing.Process):
             if self.pipe.poll():
                 return self.pipe.recv()
             else:
-                raise Queue.Empty("get() did not receive any input in the timeout specified")
+                raise queue.Empty("get() did not receive any input in the timeout specified")
 
     def prnt(self, *args):
         '''
@@ -234,7 +239,7 @@ class Process(multiprocessing.Process):
                     timeout has expired
 
         Raises:
-          Queue.Empty - If not blocking, and no messages are queued.
+          queue.Empty - If not blocking, and no messages are queued.
         '''
         return self.__handle_message(self.get(timeout=timeout, sleep=sleep))
 
@@ -246,7 +251,7 @@ class Process(multiprocessing.Process):
         try:
             while True:
                 self.receive(timeout=0)
-        except Queue.Empty:
+        except queue.Empty:
             pass
 
     def __handle_message(self, m):
@@ -327,7 +332,7 @@ class TestProcess(unittest.TestCase):
         p.join()
         m=this.recv()
         self.assertIsInstance(m,int)
-        self.assertEquals(m, 1)
+        self.assertEqual(m, 1)
 
     def test_send_message(self):
         class TestP(Process):
@@ -342,18 +347,18 @@ class TestProcess(unittest.TestCase):
         p.join()
         m=this.recv()
         self.assertIsInstance(m,FakeMessage)
-        self.assertEquals(m.target, 1234)
-        self.assertEquals(m.val,"value")
+        self.assertEqual(m.target, 1234)
+        self.assertEqual(m.val,"value")
 
     def test_get(self):
         class TestP(Process):
             M_NAME=None
             def op(self_):
-                self.assertEquals(self_.get().val,"Test message")
-                self.assertRaises(Queue.Empty,self_.get,timeout=0)
+                self.assertEqual(self_.get().val,"Test message")
+                self.assertRaises(queue.Empty,self_.get,timeout=0)
                 start=time.time()
                 timeout=1.5
-                self.assertRaises(Queue.Empty,self_.get,timeout=timeout)
+                self.assertRaises(queue.Empty,self_.get,timeout=timeout)
                 dur=time.time()-start
                 self.assertGreaterEqual(dur,timeout)
                 self.assertLess(dur-timeout,timeout/5.0)
@@ -395,16 +400,16 @@ class TestProcess(unittest.TestCase):
             sup_id=None
             p_id=None
             def op(self_):
-                self.assertEquals(self_.get_ids("Test name",block=False),None)
+                self.assertEqual(self_.get_ids("Test name",block=False),None)
                 ids=self_.get_ids("Test name 2")
-                self.assertEquals(len(ids),1)
-                self.assertEquals(ids.pop(),"1234")
+                self.assertEqual(len(ids),1)
+                self.assertEqual(ids.pop(),"1234")
 
         tp=TestP()
         (this, that)=multiprocessing.Pipe()
         tp.set_pipe(that)
         tp.start()
-        self.assertEquals(this.recv().name,"Test name")
+        self.assertEqual(this.recv().name,"Test name")
         this.send(multitools.ipc.IdsReplyMessage(set("1234"),"test id"))
 
     def test_receive(self):
@@ -419,7 +424,7 @@ class TestProcess(unittest.TestCase):
             def handle_message(self_,m):
                 self.assertIsInstance(m,FakeMessage)
                 if self_.messages==0:
-                    self.assertEquals(m.val,"Test message")
+                    self.assertEqual(m.val,"Test message")
                     self_.messages+=1
                 if m.val=='quit':
                     if self_.messages == 1:
@@ -435,7 +440,7 @@ class TestProcess(unittest.TestCase):
         this.send(FakeMessage("1234","Test message"))
         this.send(FakeMessage("quit","quit"))
         p.join()
-        self.assertEquals(terminated.value,True)
+        self.assertEqual(terminated.value,True)
 
     def test_receive_all(self):
         total=200
@@ -450,11 +455,11 @@ class TestProcess(unittest.TestCase):
             def handle_message(self_,m):
                 self.assertIsInstance(m,FakeMessage)
                 if self_.messages==total:
-                    self.assertEquals(m.val,"Test message "+str(total))
+                    self.assertEqual(m.val,"Test message "+str(total))
                     self_.finished.value=True
                     return False
                 else:
-                    self.assertEquals(m.val,"Test message "+str(self_.messages))
+                    self.assertEqual(m.val,"Test message "+str(self_.messages))
                 self_.messages+=1
                 return True
 
@@ -466,7 +471,7 @@ class TestProcess(unittest.TestCase):
         for i in range(total+1):
             this.send(FakeMessage("1234","Test message "+str(i)))
         p.join()
-        self.assertEquals(finished.value,True)
+        self.assertEqual(finished.value,True)
 
     def testOp(self):
         class badP(Process):

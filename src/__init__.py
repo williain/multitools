@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 
 '''
 Multitools
@@ -70,27 +70,27 @@ import unittest, ctypes, multiprocessing, time
 
 class TestProcessList(unittest.TestCase):
     class JobOne(multiprocessing.Process):
-        def __init__(self, val):
-            self.val=val
+        def __init__(self, have_run):
+            self.have_run=have_run
             super(TestProcessList.JobOne, self).__init__()
 
         def run(self):
-            self.val.value="Been run"
+            self.have_run.value=1
 
     class JobTwo(JobOne):
         def run(self):
-            self.val.value="Been run two"
+            self.have_run.value=1
 
     class JobSlow(JobOne):
         def run(self):
             time.sleep(1)
-            self.val.value="All done now"
+            self.have_run.value=1
 
     def setUp(self):
         self.p=ProcessList()
-        self.j1=self.JobOne(multiprocessing.Value(ctypes.c_char_p,"Not been run"))
-        self.j2=self.JobTwo(multiprocessing.Value(ctypes.c_char_p,"Not been run either"))
-        self.js=self.JobSlow(multiprocessing.Value(ctypes.c_char_p,"Not started yet"))
+        self.j1=self.JobOne(multiprocessing.Value(ctypes.c_int,0))
+        self.j2=self.JobTwo(multiprocessing.Value(ctypes.c_int,0))
+        self.js=self.JobSlow(multiprocessing.Value(ctypes.c_int,0))
 
     def test_init(self):
         self.assertEqual(self.p.processes,[])
@@ -98,30 +98,30 @@ class TestProcessList(unittest.TestCase):
     def test_add(self):
         self.p.add(self.j1)
         self.assertEqual(len(self.p.processes),1)
-        self.assertEqual(self.p.processes[0].val.value,"Not been run")
+        self.assertEqual(self.p.processes[0].have_run.value,0)
         self.p.add(self.j2)
         self.assertEqual(len(self.p.processes),2)
-        self.assertEqual(self.p.processes[1].val.value,"Not been run either")
+        self.assertEqual(self.p.processes[1].have_run.value,0)
 
     def test_add_list(self):
         self.p.add_list([self.j2,self.j1])
         self.assertEqual(len(self.p.processes),2)
-        self.assertEqual(self.p.processes[1].val.value,"Not been run")
-        self.assertEqual(self.p.processes[0].val.value,"Not been run either")
+        self.assertEqual(self.p.processes[1].have_run.value,0)
+        self.assertEqual(self.p.processes[0].have_run.value,0)
 
     def test_start(self):
         self.p.add_list([self.j1,self.j2])
         self.p.start()
         self.p.join()
-        self.assertEqual(self.p.processes[0].val.value,"Been run")
-        self.assertEqual(self.p.processes[1].val.value,"Been run two")
+        self.assertEqual(self.p.processes[0].have_run.value,1)
+        self.assertEqual(self.p.processes[1].have_run.value,1)
 
     def test_is_alive(self):
         self.p.add_list([self.js,self.j2])
         self.p.start()
         self.assertTrue(self.p.is_alive())
         self.p.join()
-        while self.js.val.value=="Not started yet":
+        while self.js.have_run.value==0:
             pass
         self.assertFalse(self.p.is_alive())
 
@@ -129,15 +129,15 @@ class TestProcessList(unittest.TestCase):
         self.p.add_list([self.j1, self.js])
         self.p.start()
         self.p.join(timeout=0.1)
-        self.assertEqual(self.js.val.value, "Not started yet")
+        self.assertEqual(self.js.have_run.value, 0)
         self.p.join()
-        self.assertEqual(self.js.val.value, "All done now")
+        self.assertEqual(self.js.have_run.value, 1)
 
     def test_terminate(self):
         self.p.add(self.js)
         self.p.start()
         self.p.terminate()
-        self.assertEqual(self.js.val.value, "Not started yet")
+        self.assertEqual(self.js.have_run.value, 0)
 
 if __name__=='__main__':
     unittest.main()
