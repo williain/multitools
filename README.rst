@@ -3,7 +3,7 @@ Multitools
 ===========
 A suite of python 2/3 tools to make working with multiple simultaneously running processes easier and more powerful.
 
-It's based on the multiprocessing library.  Needs python 2.7 or better.
+It's based on the multiprocessing library.  Needs python 2.7.4/3.0 or better.
 
 Building it
 ===========

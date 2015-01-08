@@ -16,15 +16,7 @@ while getopts ":p:" opt; do
 done
 
 pass=0
-for script in src/*.py; do
-    echo $script
-    $PYTHON $script $ARGS
-    if [[ $? != 0 ]]
-    then
-        pass=1
-    fi
-done
-for script in src/ipc/*.py; do
+for script in `find src -name \*.py`; do
     echo $script
     $PYTHON $script $ARGS
     if [[ $? != 0 ]]

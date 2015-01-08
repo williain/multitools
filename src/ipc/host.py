@@ -23,6 +23,9 @@ class Supervisor(multitools.ProcessList):
 
     def __init__(self):
         self.p_id=hex(id(self))
+        self.init_supervisor()
+
+    def init_supervisor(self):
         self.connections=[]
         self.listening=dict()
         super(Supervisor, self).__init__()
@@ -273,7 +276,7 @@ class Supervisor(multitools.ProcessList):
 WARNING: Messages from standard multiprocessing.Process objects that don't acccept and use the pipe object via set_pipe() not be received.
 """)
         self.start()
-        while self.is_alive() or self.poll_message():
+        while self.is_alive():
             self.join(interval)
             try:
                 while True:
@@ -306,12 +309,14 @@ WARNING: Messages from standard multiprocessing.Process objects that don't accce
         '''
         alive=False
         for n in range(len(self.processes)):
-            if self.processes[n].is_alive():
+            if self.connections[n]:
                 if (hasattr(self.processes[n], 'RESIDENT') and
                   self.processes[n].RESIDENT == False):
-                    alive=True
-            else:
-                self.connections[n]=None
+                    if (self.processes[n].is_alive() or
+                      self.connections[n].poll()):
+                        alive=True
+                else:
+                    self.connections[n]=None
         return alive
 
 ### Test code ############################################################

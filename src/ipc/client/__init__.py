@@ -331,7 +331,7 @@ class TestProcess(unittest.TestCase):
         p.start()
         p.join()
         m=this.recv()
-        self.assertIsInstance(m,int)
+        self.assertTrue(isinstance(m,int))
         self.assertEqual(m, 1)
 
     def test_send_message(self):
@@ -346,7 +346,7 @@ class TestProcess(unittest.TestCase):
         p.start()
         p.join()
         m=this.recv()
-        self.assertIsInstance(m,FakeMessage)
+        self.assertTrue(isinstance(m,FakeMessage))
         self.assertEqual(m.target, 1234)
         self.assertEqual(m.val,"value")
 
@@ -422,7 +422,7 @@ class TestProcess(unittest.TestCase):
                     pass
 
             def handle_message(self_,m):
-                self.assertIsInstance(m,FakeMessage)
+                self.assertTrue(isinstance(m,FakeMessage))
                 if self_.messages==0:
                     self.assertEqual(m.val,"Test message")
                     self_.messages+=1
@@ -453,7 +453,7 @@ class TestProcess(unittest.TestCase):
                     pass
 
             def handle_message(self_,m):
-                self.assertIsInstance(m,FakeMessage)
+                self.assertTrue(isinstance(m,FakeMessage))
                 if self_.messages==total:
                     self.assertEqual(m.val,"Test message "+str(total))
                     self_.finished.value=True
@@ -487,7 +487,7 @@ class TestProcess(unittest.TestCase):
         tp.start()
         tp.join()
         m=this.recv()
-        self.assertIsInstance(m,multitools.ipc.ExceptionMessage)
+        self.assertTrue(isinstance(m,multitools.ipc.ExceptionMessage))
         self.assertRaises(NotImplementedError, m.rais)
 
         class testP(Process):
