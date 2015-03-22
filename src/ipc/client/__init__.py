@@ -204,16 +204,11 @@ class Process(multiprocessing.Process):
             try:
                 def receiver(opdone,running):
                     while (not opdone.isSet()) or self.pipe.poll():
-                        try:
-                            if self.pipe.poll():
-                                m=self.pipe.recv()
-                                self.__handle_message(m)
-                            else:
-                                time.sleep(self.poll_time)
-                        except Exception as e:
-                            self.send_object(multitools.ipc.ExceptionMessage(self.sup_id, self.p_id, e))
-                            raise StopProcess()
-                            break
+                        if self.pipe.poll():
+                            m=self.pipe.recv()
+                            self.__handle_message(m)
+                        else:
+                            time.sleep(self.poll_time)
                 opdone=threading.Event()
                 t=threading.Thread(target=receiver,args=[opdone,self.stop])
                 self.setup(*args, **kwargs)
@@ -221,8 +216,6 @@ class Process(multiprocessing.Process):
                 self.op()
                 opdone.set()
                 t.join()
-            except StopProcess as s:
-                pass
             except Exception as e:
                 # Preserve the original traceback in the exception message
                 try:
