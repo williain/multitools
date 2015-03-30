@@ -121,17 +121,17 @@ class Supervisor(multitools.ProcessList):
         elif target==BROADCAST:
             return {c for c in self.connections if c}
         else:
-            c=set([self.connections[n] for n in range(len(self.processes))
-              if self.processes[n].p_id==target]
-            )
+            c = { self.connections[n] for n in range(len(self.processes))
+              if self.processes[n].p_id==target
+            }
             if len(c)==0:
                 raise ValueError(
                   "No process found with id '{0}'".format(target)
                 )
-            v=(conn for conn in c if conn)
+            c={conn for conn in c if conn}
             if len(c)==0:
                 raise ValueError(
-                  "All processes with id '{0}' have terminated, or were not valid"
+                  "All processes with id '{0}' have terminated, or were not valid".format(target)
                 )
             return c
 
@@ -169,7 +169,7 @@ class Supervisor(multitools.ProcessList):
                 if c:
                     c.send(message)
         except ValueError as e:
-            raise SupervisorException("{0}; message was '{1}'".format(str(e), message))
+            raise SupervisorException(str(e))
 
     def send(self, message):
         '''
@@ -279,7 +279,7 @@ WARNING: Messages from standard multiprocessing.Process objects that don't accce
         while self.is_alive():
             self.join(interval)
             try:
-                while True:
+                while True: # While there are messages to be got
                     m=self.get_message(block=False)
                     try:
                         if not self.handle_message(
@@ -287,7 +287,7 @@ WARNING: Messages from standard multiprocessing.Process objects that don't accce
                         ):
                             self.terminate()
                     except SupervisorException as e:
-                        print("ERROR: Supervisor; Invalid message received;"+
+                        print("ERROR: Supervisor; Invalid message received;\n"+
                           "{0}:\n{1}".format( str(m),str(e) )
                         )
             except queue.Empty:
@@ -549,6 +549,7 @@ class TestSupervisor(unittest.TestCase):
         self.p.supervise(TestSupervisor.tick/4.0,prntProxy,finishedProxy,objProxy,warn=False)
         self.assertTrue(handler.passed)
         # Note: Not testing warner automatically
+        # Note: Not testing SupervisorException
         # Note transparent exception raising is tested in TestProcess.testOP()
 
     def test_get_ids(self):

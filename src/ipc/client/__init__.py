@@ -46,7 +46,8 @@ class Process(multiprocessing.Process):
             self.pipe=None
             self.stop=multiprocessing.Event()
             self.set_poll()
-            super(Process, self).__init__(target=self.__wrap_op,args=args,kwargs=kwargs)
+            self.setup(*args, **kwargs)
+            super(Process, self).__init__(target=self.__wrap_op)
 
     def set_pipe(self, pipe):
         '''
@@ -190,10 +191,9 @@ class Process(multiprocessing.Process):
 
         return self.ids[name]
 
-    def __wrap_op(self, *args, **kwargs):
+    def __wrap_op(self):
         if not hasattr(self,'p_id'):
             # Not running under a supervisor
-            self.setup(*args, **kwargs)
             self.op()
         else:
             # Preassigned exception message in case of truly exceptional
@@ -211,7 +211,6 @@ class Process(multiprocessing.Process):
                             time.sleep(self.poll_time)
                 opdone=threading.Event()
                 t=threading.Thread(target=receiver,args=[opdone,self.stop])
-                self.setup(*args, **kwargs)
                 t.start()
                 self.op()
                 opdone.set()
@@ -261,6 +260,21 @@ class Process(multiprocessing.Process):
                 raise StopProcess()
             return r
 
+    def setup(self):
+        '''
+        Override this to handle initialisation arguments passed to your
+        process.
+
+        This method is guaranteed to be called before handle_method is, so you
+        can use it to initialise instance variables using the initialisation
+        arguments.
+
+        e.g.
+        def setup(self, foo):
+            self.foo=foo
+        '''
+        pass
+
     def op(self):
         '''
         The main method for users of this class to override.
@@ -287,26 +301,8 @@ class Process(multiprocessing.Process):
         The method to respond to messages sent to this process.  It's called
         by get_ids(),receive() and inpt() so if you use any of those you need
         to redefine this and implement your message handling here.
-
-        Your op() needs to call receive() periodically to be able to respond
-        to new messages (including any replies to get_ids()
         '''
-        raise NotImplementedError('Someone has sent you a message.  You must override this method to handle it.')
-
-    def setup(self):
-        '''
-        Override this to handle initialisation arguments passed to your
-        process.
-
-        This method is guaranteed to be called before handle_method is, so you
-        can use it to initialise instance variables using the initialisation
-        arguments.
-
-        e.g.
-        def setup(self, foo):
-            self.foo=foo
-        '''
-        pass
+        raise NotImplementedError( 'Someone has sent you a message ({0}).  You must override this method to handle it.'.format(str(message)) )
 
 class Resident(Process):
     '''
