@@ -15,6 +15,12 @@ while getopts ":p:" opt; do
     esac
 done
 
+$PYTHON test_check.py
+if [[ $? != 0 ]]
+then
+    exit 1
+fi
+
 pass=0
 for script in `find src -name \*.py`; do
     echo $script
