@@ -23,6 +23,16 @@ importable library::
 How to use it
 =============
 
+To test your install after installing it, run the test_all bash script.  This
+uses the find command to locate source files, and runs them through python,
+which causes them to run their internal unit tests.
+
+You can specify the python interpreter to use with the -p argument, e.g.::
+
+    $ ./test_all -p python3
+
+The argument to -p must be an executable which is on your current path.
+
 Further documentation exists as API pydoc, and in the
 `guide documentation <doc/guide.rst>`_ which takes you through running
 multiprocssing code to using multitools in all the different ways it can be

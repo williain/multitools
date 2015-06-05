@@ -6,6 +6,7 @@ try:
 except ImportError:
     import Queue as queue
 import multitools
+import multitools.ipc
 
 # Constants for non-specific target ids
 BROADCAST=0 #: Send to all processes
@@ -287,8 +288,8 @@ WARNING: Messages from standard multiprocessing.Process objects that don't accce
                         ):
                             self.terminate()
                     except SupervisorException as e:
-                        print("ERROR: Supervisor; Invalid message received;\n"+
-                          "{0}:\n{1}".format( str(m),str(e) )
+                        print("ERROR: Supervisor; Invalid message received;\n  "+
+                          "{0}:\n  {1}".format( str(m),str(e) )
                         )
             except queue.Empty:
                 pass
@@ -321,7 +322,7 @@ WARNING: Messages from standard multiprocessing.Process objects that don't accce
 
 ### Test code ############################################################
 
-import unittest, multitools.ipc.client
+import unittest
 
 class Test_Handshake_init(multitools.ipc.QueryMessage):
     pass
@@ -330,25 +331,31 @@ class Test_Handshake_reply(multitools.ipc.EmptyMessage):
     pass
 
 class TestSupervisor(unittest.TestCase):
-    tick=0.2
+    tick=0.02
 
-    #TODO Test handle_message returning false
-    class job_one(multitools.ipc.client.Resident):
+    class DummyProcess(multiprocessing.Process):
+        def __init__(self):
+            super(TestSupervisor.DummyProcess, self).__init__(target=self.op)
+
+        def set_pipe(self, pipe):
+            self.pipe=pipe
+
+    class job_one(DummyProcess):
         '''
-        Simple job demostrating sending StringMessages
+        Simple job demonstrating sending StringMessages
         '''
         M_NAME="Job 1"
 
-        def handle_message(self,m):
+        def op(self):
+            self.pipe.recv()
             # Start on first message
-            self.send_message(self.sup_id,multitools.ipc.PrntMessage,'Starting job one') # Helper for sending message objects
+            self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,'Starting job one'))
             time.sleep(2*TestSupervisor.tick)
-            self.prnt('Finished job one') # Shortcut for sending PrntMessage objects
-            return False
+            self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,'Finished job one'))
 
     def job_two(self,inpt,output):
         '''
-        Non-Process derived demo of non-supervisable messages that can still communicate (provided you generate and provide Queue objects for that purpose)
+        Non-Process derived demo of non-supervisable messages that can still communicate with the running process (provided you generate and provide Queue objects for that purpose)
         '''
         inpt.get(block=True)
         time.sleep(TestSupervisor.tick)
@@ -356,31 +363,24 @@ class TestSupervisor(unittest.TestCase):
         output.close()
         output.join_thread()
 
-    class job_foo(multitools.ipc.client.Resident):
+    class job_foo(DummyProcess):
         M_NAME="Job foo"
-        listening=True
+        #self.num
+        def op(self):
+            prewait=(self.num*2-5)*TestSupervisor.tick # 3=1 tick,4=3 ticks
+            jobwait=(12-self.num*3)*TestSupervisor.tick # 3=1+3 ticks,4=3+0
+            self.pipe.recv()
+            time.sleep(prewait)
+            self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,'Starting job '+str(self.num)))
+            time.sleep(jobwait)
+            self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,'Finished job '+str(self.num)))
 
-        def setup(self,num):
-            self.num=num
-
-        def handle_message(self,m):
-            time.sleep((self.num*2-5)*TestSupervisor.tick) # 3=1 tick,4=3 ticks
-            self.prnt('Starting job '+str(self.num))
-            time.sleep((12-self.num*3)*TestSupervisor.tick) # 3=1+3 ticks,4=3+0
-            self.prnt('Finished job '+str(self.num))
-            return False
-
-    class job_starter(multitools.ipc.client.Process):
+    class job_starter(DummyProcess):
         M_NAME="Job starter"
 
         def op(self):
             time.sleep(TestSupervisor.tick)
-            self.send_message(BROADCAST, multitools.ipc.StringMessage, "Go go go!")
-            time.sleep(TestSupervisor.tick*5)
-
-        def handle_message(self, m):
-            # The broadcast message will get sent here to; just ignore it
-            pass
+            self.pipe.send(multitools.ipc.StringMessage(BROADCAST, "Go go go!"))
 
     # Schedule reference:
     # -1 ticks - job_starter starts
@@ -398,10 +398,10 @@ class TestSupervisor(unittest.TestCase):
         self.j2i=multiprocessing.Queue() # Input queue
         self.j2o=multiprocessing.Queue() # Output queue
         self.j2=multiprocessing.Process(target=self.job_two,args=(self.j2i,self.j2o))
-        # Named argument
-        self.j3=self.job_foo(num=3)
-        # Ordered argument
-        self.j4=self.job_foo(4)
+        self.j3=self.job_foo()
+        self.j3.num=3
+        self.j4=self.job_foo()
+        self.j4.num=4
         # NOTE Not testing warning if M_NAME not set
 
     def test_init(self):
@@ -428,11 +428,11 @@ class TestSupervisor(unittest.TestCase):
         self.p.add_list([self.j1, self.j3])
         self.p.start()
         self.p.send_object(BROADCAST, multitools.ipc.StringMessage(None, "Ok, go!"))
-        self.assertEqual(str(self.p.get_message()),"Starting job one")
-        self.assertEqual(str(self.p.get_message(timeout=2,tick=self.tick/2)),"Starting job 3")
-        self.assertEqual(str(self.p.get_message()),"Finished job one")
+        self.assertEqual(self.p.get_message().message,"Starting job one")
+        self.assertEqual(self.p.get_message(timeout=2,tick=self.tick/2).message,"Starting job 3")
+        self.assertEqual(self.p.get_message().message,"Finished job one")
         time.sleep(4*TestSupervisor.tick)
-        self.assertEqual(str(self.p.get_message(block=False)),"Finished job 3")
+        self.assertEqual(self.p.get_message(block=False).message,"Finished job 3")
 
     def test_start(self):
         self.p.add_list([self.j1, self.j2])
@@ -440,9 +440,9 @@ class TestSupervisor(unittest.TestCase):
         j1=self.p.get_ids('Job 1').pop()
         self.p.send_object(j1, multitools.ipc.StringMessage(None, "Ok, go!"))
         self.j2i.put("Right, you too!")
-        self.assertEqual(str(self.p.get_message()),"Starting job one")
+        self.assertEqual(self.p.get_message().message,"Starting job one")
         self.assertEqual(self.j2o.get(),"Starting job two")
-        self.assertEqual(str(self.p.get_message()),"Finished job one")
+        self.assertEqual(self.p.get_message().message,"Finished job one")
         self.j1.terminate()
         self.j2.terminate()
 
@@ -452,13 +452,13 @@ class TestSupervisor(unittest.TestCase):
         self.p.send_object(BROADCAST, multitools.ipc.StringMessage(None, "Ok, go!"))
         self.j2i.put("Right, you too!")
         self.p.join()
-        self.assertEqual(str(self.p.get_message()),"Starting job one")
-        self.assertEqual(str(self.p.get_message()),"Finished job one")
+        self.assertEqual(self.p.get_message().message,"Starting job one")
+        self.assertEqual(self.p.get_message().message,"Finished job one")
         self.assertRaises(queue.Empty, self.p.get_message, block=False)
         self.assertEqual(self.j2o.get(),"Starting job two")
 
     def test_is_alive(self):
-        class alive_p(multitools.ipc.client.Process):
+        class alive_p(TestSupervisor.DummyProcess):
             M_NAME='Alive process'
             def op(self):
                 while True:
@@ -470,10 +470,10 @@ class TestSupervisor(unittest.TestCase):
         # ap is a non-resident process
         self.p.add_list([self.j1, self.j2, ap])
         self.p.start()
-        self.assertTrue(self.p.is_alive())
-        ap.terminate()
+        self.assertTrue(self.p.is_alive(),"Alive process hasn't started?")
+        self.p.terminate()
         time.sleep(0.1) # Hack: Needs a little time to terminate stuff
-        self.assertFalse(self.p.is_alive())
+        self.assertFalse(self.p.is_alive(), 'Terminated process still alive')
         if self.j1.is_alive(): self.j1.terminate()
         if self.j2.is_alive(): self.j2.terminate()
 
@@ -486,11 +486,11 @@ class TestSupervisor(unittest.TestCase):
         self.assertFalse(self.j2.is_alive())
 
     def test_supervise(self):
-        class objJob(multitools.ipc.client.Process):
+        class objJob(TestSupervisor.DummyProcess):
             M_NAME="objJob"
 
             def op(self):
-                self.send_object("Str object")
+                self.pipe.send("Str object")
 
         self.p.add_list([self.j1,self.j3,self.j4,objJob()])
         self.p.add(self.job_starter())
@@ -552,94 +552,73 @@ class TestSupervisor(unittest.TestCase):
         # Note: Not testing SupervisorException
         # Note transparent exception raising is tested in TestProcess.testOP()
 
-    def test_get_ids(self):
-        class agent(multitools.ipc.client.Process):
-            M_NAME="Agent"
-            def op(opself):
-                # Ask for id, but don't block; it's not cached so we'll get
-                # none, but it'll trigger the id to be cached in the background
-                self.assertEqual(len(opself.get_ids('Agent', block=False)), 0)
-                # Ask again, but blocking until we get the right id now.
-                self.assertEqual(opself.get_ids('Agent'), set((opself.p_id,)))
-                # We've now got the Agent id cached, so we can ask for it again without blocking
-                self.assertEqual(opself.get_ids('Agent', block=False), set((opself.p_id,)))
-                # Finally, a negative test
-                self.assertEqual(opself.get_ids('Non existent name'), set())
-
-        self.p.add(agent())
-        self.p.supervise()
-
     # IPC tests
 
     def testGetIdsMessage(self):
-        class agent(multitools.ipc.client.Process):
+        class agent(TestSupervisor.DummyProcess):
             M_NAME="Agent"
-            def op(opself):
-                opself.send_message(opself.sup_id, multitools.ipc.GetIdsMessage, opself.p_id, 'Agent')
-                ids = opself.pipe.recv().ids
-                # Safe to assume the next message is a IdsReplyMessage only
-                # because we're the only process here.  If anything else it
-                # liable to talk to you, the suggested API is to use
-                # self.get_ids()
+            def op(self_):
+                self_.pipe.send(multitools.ipc.GetIdsMessage(self_.sup_id, self_.p_id, 'Agent'))
+                ids = self_.pipe.recv().ids
                 self.assertEqual(len(ids), 1)
-                self.assertEqual(ids.pop(),opself.p_id)
+                self.assertEqual(ids.pop(),self_.p_id)
         self.p.add(agent())
         self.p.supervise()
 
     def testIPC(self):
-        class agent_one(multitools.ipc.client.Process):
+        class agent_one(TestSupervisor.DummyProcess):
             M_NAME="Agent 1"
+            #self.agent2
             def op(self):
                 # NOTE: Note not testing non-blocking prequerying
-                ids=self.get_ids('Agent 2')
-                if len(ids) == 1:
-                    self.send_message(ids.pop(), Test_Handshake_init, self.p_id)
-                else:
-                    if len(ids) == 0:
-                        self.prnt("ERROR: No id got")
-                    else:
-                        self.prnt("ERROR: Too many ids got")
+                self.pipe.send(Test_Handshake_init(self.agent2, self.p_id))
                 m=self.pipe.recv()
                 if isinstance(m, Test_Handshake_reply):
-                    self.prnt("Test OK!")
+                    self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,"Test OK!"))
                 else:
-                    self.prnt("ERROR: Bad test reply for agent one")
+                    self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,"ERROR: Bad test reply for agent one"))
 
-        class agent_two(multitools.ipc.client.Process):
+        class agent_two(TestSupervisor.DummyProcess):
             M_NAME="Agent 2"
             def op(self):
                 m=self.pipe.recv()
                 if isinstance(m, Test_Handshake_init):
                     # Send a reply back to the source of the handshake
-                    self.send_message(m.source,Test_Handshake_reply)
+                    self.pipe.send(Test_Handshake_reply(m.source))
                 else:
-                    self.prnt("ERROR: Unexpected message to agent two")
+                    self.pipe.send(multitools.ipc.PrntMessage(self.sup_id,"ERROR: Unexpected message to agent two"))
 
-        class logger(multitools.ipc.client.Process):
+        class logger(TestSupervisor.DummyProcess):
             M_NAME="Logger"
-            LISTEN_TO=[multitools.ipc.EmptyMessage]
-            RESIDENT=True
-            def setup(self):
-                self.messagetypes=[Test_Handshake_init, Test_Handshake_reply]
-                self.messageindex=0
+            LISTEN_TYPE=[multitools.ipc.EmptyMessage]
+            def op(self_):
+                self_.messagetypes=[Test_Handshake_init, Test_Handshake_reply]
+                self_.messageindex=0
+                while True:
+                    m=self_.handle_message(self_.pipe.recv())
+                    if not m:
+                        break
 
             def handle_message(self_, m):
                 if isinstance(m, multitools.ipc.ResidentTermMessage):
-                    self.assertEqual(self_.messageindex, len(self_.messagetypes))
+                    self.assertEqual(self_.messageindex, len(self_.messagetypes), 'Process terminated before all messages received')
                     return False
                 else:
-                    self.assertLess(self_.messageindex, len(self_.messagetypes))
-                    self.assertEqual(type(m),self_.messagetypes[self_.messageindex])
+                    self.assertLess(self_.messageindex, len(self_.messagetypes), 'Too many messages received')
+                    self.assertEqual(type(m),self_.messagetypes[self_.messageindex], "Message {0} doesn't match expected".format(self_.messageindex))
                     self_.messageindex=self_.messageindex+1
 
         def testHandler(m):
             if m.startswith('ERROR:'):
-                print(m)
+                self.assertFalse(True, m)
             else:
                 self.assertEqual(m, "Test OK!")
 
-        self.p.add(agent_one())
-        self.p.add(agent_two())
+        a1=agent_one()
+        a2=agent_two()
+        self.p.add(a1)
+        self.p.add(a2)
+        a1.agent2=a2.p_id
         self.p.add(logger())
         self.p.supervise(prntHandler=testHandler)
         #TODO: Add a simple Process and check it doesn't try to broadcast to it

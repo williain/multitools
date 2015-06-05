@@ -12,16 +12,11 @@ import threading
 class ClientException(Exception):
     pass
 
-class StopProcess(SystemExit):
-    '''
-    Signal to exit the process from any thread or stack level
-    '''
-    pass
-
-class Process(multiprocessing.Process):
+class Process(object):
     '''
     Interface for your own classes specially designed for use with ProcessList
-    helping you pass messages between processes.
+    helping you pass messages between processes.  Ducktyped as a
+    multiprocessing.Process, so you can also just use it as one of those.
 
     Derive from this class and implement op() with whatever arguments you
     deem fit.  Then instantiate it, passing in the values for those arguments
@@ -44,10 +39,10 @@ class Process(multiprocessing.Process):
             self.queries=collections.deque()
             self.ids={}
             self.pipe=None
-            self.stop=multiprocessing.Event()
             self.set_poll()
+            self.process=None
+            self.stopped=multiprocessing.Event()
             self.setup(*args, **kwargs)
-            super(Process, self).__init__(target=self.__wrap_op)
 
     def set_pipe(self, pipe):
         '''
@@ -72,6 +67,48 @@ class Process(multiprocessing.Process):
         - time - The poll time in seconds (default: 0.1s)
         '''
         self.poll_time=time
+
+    def start(self):
+        '''
+        Start the process.
+        '''
+        self.process=multiprocessing.Process(target=self.__wrap_op)
+        def stopperThread(self):
+            while not self.stopped.is_set():
+                time.sleep(self.poll_time*2)
+            if self.process.is_alive():
+                self.process.terminate()
+
+        self.thread=threading.Thread(target=stopperThread,args=[self],name='Stopper')
+        self.process.start()
+        self.thread.start()
+
+    def join(self, timeout=None):
+        '''
+        Wait for the process to terminate
+        '''
+        #TODO Handle timeout
+        if self.process:
+            while self.process.is_alive():
+                time.sleep(self.poll_time*2)
+            self.stopped.set()
+        else:
+            # TODO:Throw exception?
+            print("DEBUG: No process to join!")
+            pass
+
+    def is_alive(self):
+        '''
+        Return true if the process is running; false otherwise
+        '''
+        return True if self.process and self.process.is_alive() else False
+
+    def terminate(self):
+        '''
+        Stop the process
+        '''
+        if self.thread.is_alive():
+            self.stopped.set()
 
     def send_object(self, object):
         '''
@@ -176,7 +213,7 @@ class Process(multiprocessing.Process):
         '''
         if not name in self.ids:
             while self.pipe.poll():
-                self.__handle_message(self.pipe.recv())
+                self.__handle_message(self.pipe.recv()) # TODO Test for false?
 
             if not name in self.ids:
                 self.send_object(
@@ -202,19 +239,20 @@ class Process(multiprocessing.Process):
               RuntimeError("Unable to process exception; aborting!")
             )
             try:
-                def receiver(opdone,running):
-                    while (not opdone.isSet()) or self.pipe.poll():
+                def receiverThread():
+                    while (not self.stopped.is_set()) or self.pipe.poll():
                         if self.pipe.poll():
                             m=self.pipe.recv()
-                            self.__handle_message(m)
+                            if not self.__handle_message(m):
+                                self.stopped.set()
                         else:
                             time.sleep(self.poll_time)
-                opdone=threading.Event()
-                t=threading.Thread(target=receiver,args=[opdone,self.stop])
-                t.start()
+
+                rec=threading.Thread(target=receiverThread, name='Receiver')
+                rec.start()
                 self.op()
-                opdone.set()
-                t.join()
+                self.stopped.set()
+                rec.join()
             except Exception as e:
                 # Preserve the original traceback in the exception message
                 try:
@@ -250,14 +288,11 @@ class Process(multiprocessing.Process):
                 )
         elif isinstance(m, multitools.ipc.ResidentTermMessage) and hasattr(self,'RESIDENT') and self.RESIDENT:
             # We're out of here!
-            self.stop.set()
+            return False
         else:
             self.__pre_handle_message()
             r=self.handle_message(m)
             self.__post_handle_message(r)
-            if r == False:
-                self.stop.set()
-                raise StopProcess()
             return r
 
     def setup(self):
@@ -309,15 +344,14 @@ class Resident(Process):
     Prototype for a multitools.Process class that only implements
     handle_message(), and doesn't have an op() (note it may still
     implement a setup() method for class arguments)
+
+    It will stay alive until all other processes have finished.
     '''
-    RESIDENT=True
+    RESIDENT=True # Enable ResidentTermMessages
     INTERVAL=1 # Seconds
 
-    def has_stopped(self):
-        return self.stop.is_set()
-
     def op(self):
-        while not self.has_stopped():
+        while not self.stopped.is_set():
             time.sleep(self.INTERVAL)
 
 ### Test code ############################################################
@@ -413,17 +447,27 @@ class TestProcess(unittest.TestCase):
             sup_id=None
             p_id=None
             def op(self_):
-                self.assertEqual(self_.get_ids("Test name",block=False),None)
-                ids=self_.get_ids("Test name 2")
+                self.assertEqual(self_.get_ids("Test name",block=False),set())
+                while not 'Test name' in self_.ids.keys():
+                    time.sleep(self_.poll_time)
+                ids=self_.get_ids("Test name")
                 self.assertEqual(len(ids),1)
                 self.assertEqual(ids.pop(),"1234")
+                self_.prnt("Test finished")
 
         tp=TestP()
         (this, that)=multiprocessing.Pipe()
         tp.set_pipe(that)
         tp.start()
         self.assertEqual(this.recv().name,"Test name")
-        this.send(multitools.ipc.IdsReplyMessage(set("1234"),"test id"))
+        this.send(multitools.ipc.IdsReplyMessage("test id",set(["1234"]) ))
+        tp.join()
+        time.sleep(tp.poll_time)
+        self.assertTrue(this.poll())
+        m=this.recv()
+        self.assertIsInstance(m, multitools.ipc.PrntMessage, str(m))
+        while this.poll():
+            self.assertTrue(False, "Unexpected in the message queue:"+str(this.recv()))
 
     def test_handle_message(self):
         class TestP(Process):
@@ -445,11 +489,9 @@ class TestProcess(unittest.TestCase):
                     self.assertEqual(m.val,"Test message")
                     self_.messages+=1
                     self.assertTrue(self_.messages<=1)
-                    return True
                 if m.val=='quit':
                     self.assertEqual(self_.messages,1)
                     self_.terminated.set()
-                    return False
 
         terminated=multiprocessing.Event()
         p=TestP(terminated)
@@ -462,10 +504,32 @@ class TestProcess(unittest.TestCase):
         self.assertTrue(terminated.is_set())
         if this.poll():
             # Sent an exception?
-            print(this.recv())
-            self.assertTrue(False)
+            self.assertTrue(False,str(this.recv()))
 
-    def testOp(self):
+        # Test handle_message returning False
+        class TestFalseFinish(Process):
+            M_NAME=None
+            p_id=None
+            sup_id=None
+
+            def op(self):
+                while True:
+                    pass
+
+            def handle_message(self,m):
+                return False
+
+        p=TestFalseFinish()
+        (this,that)=multiprocessing.Pipe()
+        p.set_pipe(that)
+        p.start()
+        this.send(FakeMessage("1234","quit"))
+        start=time.time()
+        while p.is_alive() and time.time()-start<2:
+            time.sleep(0.1)
+        self.assertFalse(p.is_alive())
+
+    def test_op(self):
         class badP(Process):
             M_NAME="BadP"
             def op(self):
@@ -508,7 +572,7 @@ class TestResident(unittest.TestCase):
                 else:
                     self.assertEqual(messages[self_.index],m)
                 self_.index+=1
-                if self_.index==len(messages):
+                if self_.index>=len(messages):
                     self_.finished.set()
                     return False
 
@@ -519,27 +583,11 @@ class TestResident(unittest.TestCase):
         tp.start()
         for m in messages:
             this.send(m)
+        tp.join()
         if this.poll():
             print(this.recv())
             self.assertTrue(False, 'Process sent a message (maybe an exception?')
-        tp.join()
         self.assertTrue(finished.is_set())
-
-    def test_has_stopped(self):
-        class TestP(Resident):
-            M_NAME="Test P"
-            p_id=None
-            sup_id=None
-            INTERVAL=0.1
-        tp=TestP()
-        self.assertFalse(tp.has_stopped()) # Hasn't even started
-        (this,that)=multiprocessing.Pipe()
-        tp.set_pipe(that)
-        tp.start()
-        self.assertFalse(tp.has_stopped())
-        this.send(multitools.ipc.ResidentTermMessage("target"))
-        time.sleep(0.2) # Allow for message to be received
-        self.assertTrue(tp.has_stopped())
 
 if __name__=='__main__':
     unittest.main()
