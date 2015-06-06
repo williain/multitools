@@ -541,7 +541,6 @@ class TestSupervisor(unittest.TestCase):
                     print("OBJ FAIL: Expected object '{0}' got '{1}'".format(self.objects[self.obj]))
                 self.obj+=1
 
-        #TODO: Put some trace statements in to work out what's happening and what isnae
         handler=handlers()
         prntProxy = lambda m: handler.prntHandler(m)
         finishedProxy = lambda: handler.finishedHandler()

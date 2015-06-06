@@ -86,27 +86,10 @@ class Process(object):
         '''
         Wait for the process to terminate
         '''
-        if self.process:
-            if timeout:
-                start=time.time()
-                while self.process.is_alive():
-                    delta=time.time()-start
-                    if delta>=timeout:
-                        break
-                    elif timeout-delta>self.poll_time*3:
-                        time.sleep(self.poll_time*2)
-                    else:
-                        time.sleep((timeout-delta)/4)
-                if not self.process.is_alive():
-                    self.stopped.set()
-            else:
-                while self.process.is_alive():
-                    time.sleep(self.poll_time*2)
+        assert self.process is not None, 'can only join a started process'
+        self.process.join(timeout)
+        if not self.process.is_alive():
             self.stopped.set()
-        else:
-            # TODO:Throw exception?
-            print("DEBUG: No process to join!")
-            pass
 
     def is_alive(self):
         '''
@@ -499,6 +482,7 @@ class TestProcess(unittest.TestCase):
                 time.sleep(0.5)
 
         p=TestP()
+        self.assertRaises(AssertionError, p.join)
         p.start()
         start=time.time()
         p.join(timeout=0.2)
