@@ -8,6 +8,7 @@ except ImportError:
     import Queue as queue
 import multitools.ipc 
 import threading
+
 class ClientException(Exception):
     pass
 
@@ -41,6 +42,8 @@ class Process(object):
             self.set_poll()
             self.process=None
             self.stopped=multiprocessing.Event()
+            self.inptactive=False
+            self.inptresponse=None
             self.setup(*args, **kwargs)
 
     def set_pipe(self, pipe):
@@ -165,20 +168,19 @@ class Process(object):
 
     def inpt(self, prompt=None):
         '''
-        Replacement for the raw_input function.  Triggers
-        ProcessList.supervise() to block and wait for input in the parent
-        process, and blocks this function call too (although handle_message
-        will be invoked for any messages received while blocking).
+        Replacement for the raw_input function when using host.Supervisor;
+        blocks and waits for input.  Also triggers the supervisor to block
+        on input in the parent process.
         '''
+        self.inptactive=True
         self.send_object(
           multitools.ipc.InputMessage(self.sup_id,self.p_id,prompt)
         )
-        while True:
-            m=self.pipe.recv()
-            if isinstance(m,multitools.ipc.InputResponseMessage):
-                return m.message
-            else:
-                self.__handle_message(m)
+        while self.inptactive:
+            time.sleep(self.poll_time)
+        r=self.inptresponse
+        self.inptresponse=None
+        return r
 
     def get_ids(self, name, block=True):
         '''
@@ -206,19 +208,15 @@ class Process(object):
         having replied yet, and the name not being valid.
         '''
         if not name in self.ids:
-            while self.pipe.poll():
-                self.__handle_message(self.pipe.recv()) # TODO Test for false?
-
-            if not name in self.ids:
-                self.send_object(
-                    multitools.ipc.GetIdsMessage(self.sup_id, self.p_id, name)
-                )
-                self.queries.append(name)
-                if block==False:
-                    return set()
-                else:
-                    while not name in self.ids:
-                        self.__handle_message(self.pipe.recv())
+            self.send_object(
+                multitools.ipc.GetIdsMessage(self.sup_id, self.p_id, name)
+            )
+            self.queries.append(name)
+            if block==False:
+                return set()
+            else:
+                while not name in self.ids:
+                    time.sleep(self.poll_time)
 
         return self.ids[name]
 
@@ -279,6 +277,15 @@ class Process(object):
                   "{0}: IdsReplyMessage received for no query".format(
                     self.p_id
                   )
+                )
+        elif isinstance(m, multitools.ipc.InputResponseMessage):
+            if self.inptactive:
+                self.inptresponse=m.message
+                self.inptactive=False
+            else:
+                raise ClientException(
+                  '{0}: InputResponse received unexpectedly: '+
+                  "message '{1}'".format(self.p_id, m.message)
                 )
         elif isinstance(m, multitools.ipc.ResidentTermMessage) and hasattr(self,'RESIDENT') and self.RESIDENT:
             # We're out of here!
@@ -468,7 +475,6 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(this.recv().name,"Test name")
         this.send(multitools.ipc.IdsReplyMessage("test id",set(["1234"]) ))
         tp.join()
-        time.sleep(tp.poll_time)
         self.assertTrue(this.poll())
         m=this.recv()
         self.assertIsInstance(m, multitools.ipc.PrntMessage, str(m))
