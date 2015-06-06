@@ -8,7 +8,6 @@ except ImportError:
     import Queue as queue
 import multitools.ipc 
 import threading
-
 class ClientException(Exception):
     pass
 
@@ -87,10 +86,22 @@ class Process(object):
         '''
         Wait for the process to terminate
         '''
-        #TODO Handle timeout
         if self.process:
-            while self.process.is_alive():
-                time.sleep(self.poll_time*2)
+            if timeout:
+                start=time.time()
+                while self.process.is_alive():
+                    delta=time.time()-start
+                    if delta>=timeout:
+                        break
+                    elif timeout-delta>self.poll_time*3:
+                        time.sleep(self.poll_time*2)
+                    else:
+                        time.sleep((timeout-delta)/4)
+                if not self.process.is_alive():
+                    self.stopped.set()
+            else:
+                while self.process.is_alive():
+                    time.sleep(self.poll_time*2)
             self.stopped.set()
         else:
             # TODO:Throw exception?
@@ -435,11 +446,23 @@ class TestProcess(unittest.TestCase):
         self.assertFalse(this.poll())
 
     def test_inpt(self):
-        # Can't be easily tested automatically since it blocks on user input
-        # Thankfully it's a two liner, and should be pretty obvious if it
-        # doesn't work.
-        #TODO Can be tested with a fake supervisor
-        pass
+        class TestP(Process):
+            M_NAME='testProcess'
+            sup_id='supervisor'
+            p_id='process_testprnt'
+            def op(self_):
+                self.assertEqual(self_.inpt('Test prompt'),'Test response')
+
+        tp=TestP()
+        (this, that)=multiprocessing.Pipe()
+        tp.set_pipe(that)
+        tp.start()
+        m=this.recv()
+        self.assertIs(type(m),multitools.ipc.InputMessage,str(m))
+        self.assertEqual(m.prompt, 'Test prompt')
+        this.send(multitools.ipc.InputResponseMessage(m.source,'Test response'))
+        self.assertFalse(this.poll())
+        tp.join()
 
     def test_get_ids(self):
         class TestP(Process):
@@ -469,6 +492,59 @@ class TestProcess(unittest.TestCase):
         while this.poll():
             self.assertTrue(False, "Unexpected in the message queue:"+str(this.recv()))
 
+    def test_join(self):
+        class TestP(Process):
+            M_NAME=None
+            def op(self):
+                time.sleep(0.5)
+
+        p=TestP()
+        p.start()
+        start=time.time()
+        p.join(timeout=0.2)
+        self.assertAlmostEqual(time.time()-start,0.2,delta=0.02)
+        self.assertTrue(p.is_alive())
+        p.terminate()
+        p=TestP()
+        start=time.time()
+        p.start()
+        p.join(0.3)
+        self.assertAlmostEqual(time.time()-start,0.3,delta=0.02)
+        self.assertTrue(p.is_alive())
+        p.terminate()
+        p=TestP()
+        p.start()
+        start=time.time()
+        p.join()
+        self.assertAlmostEqual(time.time()-start,0.5,delta=0.3)
+
+    def test_start(self):
+        class TestP(Process):
+            M_NAME=None
+            sup_id=None
+            def op(self):
+                self.prnt('Started')
+                time.sleep(10)
+
+        p=TestP()
+        (this, that)=multiprocessing.Pipe()
+        p.set_pipe(that)
+        # Test process starts
+        p.start()
+        self.assertEqual(this.recv().message,'Started')
+        p.terminate()
+        while p.is_alive():
+            time.sleep(0.1)
+
+        # TODO
+        # # Test process can be restarted
+        # (this, that)=multiprocessing.Pipe()
+        # p.set_pipe(that)
+        # p.start()
+        # self.assertTrue(this.poll())
+        # self.assertEqual(this.recv().message,'Started')
+        # p.terminate()
+
     def test_handle_message(self):
         class TestP(Process):
             M_NAME=None
@@ -481,7 +557,7 @@ class TestProcess(unittest.TestCase):
 
             def op(self_):
                 while not self_.terminated.is_set():
-                    pass
+                    time.sleep(0.1)
 
             def handle_message(self_,m):
                 self.assertTrue(isinstance(m,FakeMessage))
