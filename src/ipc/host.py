@@ -331,7 +331,7 @@ class Test_Handshake_reply(multitools.ipc.EmptyMessage):
     pass
 
 class TestSupervisor(unittest.TestCase):
-    tick=0.02
+    tick=0.04
 
     class DummyProcess(multiprocessing.Process):
         def __init__(self):
