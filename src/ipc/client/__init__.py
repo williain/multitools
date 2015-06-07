@@ -450,9 +450,8 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(m.prompt, 'Test prompt')
         this.send(multitools.ipc.InputResponseMessage(m.source,'Test response'))
         self.assertFalse(this.poll())
-        tp.join(self.tick*2)
+        tp.join(self.tick*5)
         self.assertFalse(tp.is_alive())
-
 
         class NoIpP(Process):
             def op(self_):
@@ -460,7 +459,7 @@ class TestProcess(unittest.TestCase):
 
         tp=NoIpP()
         tp.start()
-        tp.join(self.tick*2)
+        tp.join(self.tick*5)
         self.assertFalse(tp.is_alive())
 
     def test_get_ids(self):
@@ -511,21 +510,21 @@ class TestProcess(unittest.TestCase):
         p.start()
         start=time.time()
         p.join(timeout=self.tick*10)
-        self.assertAlmostEqual(time.time()-start,self.tick*10,delta=self.tick*2)
+        self.assertAlmostEqual(time.time()-start,self.tick*10,delta=self.tick*4)
         self.assertTrue(p.is_alive())
         p.terminate()
         p=TestP()
         start=time.time()
         p.start()
         p.join(self.tick*15)
-        self.assertAlmostEqual(time.time()-start,self.tick*15,delta=self.tick*2)
+        self.assertAlmostEqual(time.time()-start,self.tick*15,delta=self.tick*4)
         self.assertTrue(p.is_alive())
         p.terminate()
         p=TestP()
         p.start()
         start=time.time()
         p.join()
-        self.assertAlmostEqual(time.time()-start,self.tick*20,delta=self.tick*2)
+        self.assertAlmostEqual(time.time()-start,self.tick*20,delta=self.tick*4)
 
     def test_start(self):
         class TestP(Process):
@@ -588,8 +587,10 @@ class TestProcess(unittest.TestCase):
         tp.start()
         for m in messages:
             this.send(m)
-        tp.join(self.tick*2)
+        tp.join(self.tick*10)
         self.assertFalse(tp.is_alive())
+        if tp.is_alive():
+            tp.terminate()
         self.assertTrue(finished.is_set())
         if this.poll():
             # Sent an exception?
