@@ -33,9 +33,6 @@ class Process(object):
         if type(self) is Process:
             raise NotImplementedError("Don't instantiate the multitools.Process interface directly")
         else:
-            # TODO Move this check to the supervisor, and guard for non-set p_ids etc. before every use
-            if not hasattr(self, 'M_NAME'):
-                print("WARNING: Must set a string 'M_NAME' for your Process")
             self.queries=collections.deque()
             self.ids={}
             self.pipe=None
@@ -172,6 +169,8 @@ class Process(object):
         blocks and waits for input.  Also triggers the supervisor to block
         on input in the parent process.
         '''
+        if not hasattr(self, 'p_id'):
+            raise ClientException('Must set M_NAME and be added to a supervisor before calling inpt()')
         self.inptactive=True
         self.send_object(
           multitools.ipc.InputMessage(self.sup_id,self.p_id,prompt)
@@ -207,6 +206,8 @@ class Process(object):
         Unless you block, you cannot distinguish between the supervisor not
         having replied yet, and the name not being valid.
         '''
+        if not hasattr(self, 'p_id'):
+            raise ClientException('Must set M_NAME and be added to a supervisor to use get_ids()')
         if not name in self.ids:
             self.send_object(
                 multitools.ipc.GetIdsMessage(self.sup_id, self.p_id, name)
@@ -366,29 +367,29 @@ class FakeMessage(object):
 
 class TestProcess(unittest.TestCase):
     class TestP(Process):
-        M_NAME=None
         pass
+
+    def setUp(self):
+        start=time.time()
+        self.p=TestProcess.TestP()
+        self.tick=(time.time()-start)*5
 
     def test_init(self):
         self.assertRaises(NotImplementedError,Process)
-        p=self.TestP() # Subclasses don't error
 
     def test_set_pipe(self):
-        p=self.TestP()
         a=object()
-        p.set_pipe(a)
-        self.assertIs(p.pipe, a)
+        self.p.set_pipe(a)
+        self.assertIs(self.p.pipe, a)
 
     def test_set_poll(self):
-        p=self.TestP()
-        p.set_poll(4)
-        self.assertEqual(p.poll_time,4)
-        p.set_poll(time = 1.5)
-        self.assertEqual(p.poll_time,1.5)
+        self.p.set_poll(4)
+        self.assertEqual(self.p.poll_time,4)
+        self.p.set_poll(time = 1.5)
+        self.assertEqual(self.p.poll_time,1.5)
 
     def test_send_object(self):
         class TestP(Process):
-            M_NAME=None
             def op(self):
                 self.send_object(int(1))
 
@@ -403,7 +404,6 @@ class TestProcess(unittest.TestCase):
 
     def test_send_message(self):
         class TestP(Process):
-            M_NAME=None
             def op(self_):
                 self_.send_message([1234], FakeMessage, "value")
 
@@ -419,9 +419,7 @@ class TestProcess(unittest.TestCase):
 
     def test_prnt(self):
         class TestP(Process):
-            M_NAME='testProcess'
             sup_id='supervisor'
-            p_id='process_testprnt'
             def op(self):
                 self.prnt('Test prnt')
 
@@ -437,13 +435,13 @@ class TestProcess(unittest.TestCase):
 
     def test_inpt(self):
         class TestP(Process):
-            M_NAME='testProcess'
             sup_id='supervisor'
             p_id='process_testprnt'
             def op(self_):
                 self.assertEqual(self_.inpt('Test prompt'),'Test response')
 
         tp=TestP()
+        tp.set_poll(self.tick)
         (this, that)=multiprocessing.Pipe()
         tp.set_pipe(that)
         tp.start()
@@ -452,11 +450,21 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(m.prompt, 'Test prompt')
         this.send(multitools.ipc.InputResponseMessage(m.source,'Test response'))
         self.assertFalse(this.poll())
-        tp.join()
+        tp.join(self.tick*2)
+        self.assertFalse(tp.is_alive())
+
+
+        class NoIpP(Process):
+            def op(self_):
+                self.assertRaises(ClientException, self_.inpt)
+
+        tp=NoIpP()
+        tp.start()
+        tp.join(self.tick*2)
+        self.assertFalse(tp.is_alive())
 
     def test_get_ids(self):
         class TestP(Process):
-            M_NAME=None
             sup_id=None
             p_id=None
             def op(self_):
@@ -469,52 +477,62 @@ class TestProcess(unittest.TestCase):
                 self_.prnt("Test finished")
 
         tp=TestP()
+        tp.set_poll(self.tick)
         (this, that)=multiprocessing.Pipe()
         tp.set_pipe(that)
         tp.start()
         self.assertEqual(this.recv().name,"Test name")
         this.send(multitools.ipc.IdsReplyMessage("test id",set(["1234"]) ))
-        tp.join()
+        tp.join(self.tick)
+        time.sleep(self.tick*2)
+        self.assertFalse(tp.is_alive())
         self.assertTrue(this.poll())
         m=this.recv()
         self.assertIsInstance(m, multitools.ipc.PrntMessage, str(m))
         while this.poll():
             self.assertTrue(False, "Unexpected in the message queue:"+str(this.recv()))
 
+        class BadP(Process):
+            def op(self_):
+                #TODO Convert all process assertions to use a flag
+                self.assertRaises(ClientException, self_.get_ids, 'foo')
+
+        tp=BadP()
+        tp.start()
+        tp.join(self.tick*2)
+
     def test_join(self):
         class TestP(Process):
-            M_NAME=None
-            def op(self):
-                time.sleep(0.5)
+            def op(self_):
+                time.sleep(self.tick*20)
 
         p=TestP()
         self.assertRaises(AssertionError, p.join)
         p.start()
         start=time.time()
-        p.join(timeout=0.2)
-        self.assertAlmostEqual(time.time()-start,0.2,delta=0.02)
+        p.join(timeout=self.tick*10)
+        self.assertAlmostEqual(time.time()-start,self.tick*10,delta=self.tick*2)
         self.assertTrue(p.is_alive())
         p.terminate()
         p=TestP()
         start=time.time()
         p.start()
-        p.join(0.3)
-        self.assertAlmostEqual(time.time()-start,0.3,delta=0.02)
+        p.join(self.tick*15)
+        self.assertAlmostEqual(time.time()-start,self.tick*15,delta=self.tick*2)
         self.assertTrue(p.is_alive())
         p.terminate()
         p=TestP()
         p.start()
         start=time.time()
         p.join()
-        self.assertAlmostEqual(time.time()-start,0.5,delta=0.3)
+        self.assertAlmostEqual(time.time()-start,self.tick*20,delta=self.tick*2)
 
     def test_start(self):
         class TestP(Process):
-            M_NAME=None
             sup_id=None
-            def op(self):
-                self.prnt('Started')
-                time.sleep(10)
+            def op(self_):
+                self_.prnt('Started')
+                time.sleep(self.tick*10)
 
         p=TestP()
         (this, that)=multiprocessing.Pipe()
@@ -523,8 +541,9 @@ class TestProcess(unittest.TestCase):
         p.start()
         self.assertEqual(this.recv().message,'Started')
         p.terminate()
-        while p.is_alive():
-            time.sleep(0.1)
+        #p.join(self.tick*2)
+        time.sleep(self.tick*20)
+        self.assertFalse(p.is_alive())
 
         # TODO
         # # Test process can be restarted
@@ -536,99 +555,18 @@ class TestProcess(unittest.TestCase):
         # p.terminate()
 
     def test_handle_message(self):
-        class TestP(Process):
-            M_NAME=None
-            p_id=None
-            sup_id=None
-
-            def setup(self_,terminated):
-                self_.terminated=terminated
-                self_.messages=0
-
-            def op(self_):
-                while not self_.terminated.is_set():
-                    time.sleep(0.1)
-
-            def handle_message(self_,m):
-                self.assertTrue(isinstance(m,FakeMessage))
-                if self_.messages==0:
-                    self.assertEqual(m.val,"Test message")
-                    self_.messages+=1
-                    self.assertTrue(self_.messages<=1)
-                if m.val=='quit':
-                    self.assertEqual(self_.messages,1)
-                    self_.terminated.set()
-
-        terminated=multiprocessing.Event()
-        p=TestP(terminated)
-        (this,that)=multiprocessing.Pipe()
-        p.set_pipe(that)
-        p.start()
-        this.send(FakeMessage("1234","Test message"))
-        this.send(FakeMessage("1234","quit"))
-        p.join()
-        self.assertTrue(terminated.is_set())
-        if this.poll():
-            # Sent an exception?
-            self.assertTrue(False,str(this.recv()))
-
-        # Test handle_message returning False
-        class TestFalseFinish(Process):
-            M_NAME=None
-            p_id=None
-            sup_id=None
-
-            def op(self):
-                while True:
-                    pass
-
-            def handle_message(self,m):
-                return False
-
-        p=TestFalseFinish()
-        (this,that)=multiprocessing.Pipe()
-        p.set_pipe(that)
-        p.start()
-        this.send(FakeMessage("1234","quit"))
-        start=time.time()
-        while p.is_alive() and time.time()-start<2:
-            time.sleep(0.1)
-        self.assertFalse(p.is_alive())
-
-    def test_op(self):
-        class badP(Process):
-            M_NAME="BadP"
-            def op(self):
-                self.val.set()
-
-        tp=badP()
-        tp.val=multiprocessing.Event()
-        tp.start()
-        tp.join()
-        self.assertTrue(tp.val.is_set())
-
-        class testP(Process):
-            M_NAME="TestP"
-            def op(self):
-                time.sleep(0.25)
-
-        tp=testP()
-        start=time.time()
-        tp.start()
-        tp.join()
-        self.assertGreaterEqual(time.time()+0.25, start)
-
-class TestResident(unittest.TestCase):
-    def test_handle_message(self):
         messages=[1,"string",FakeMessage("foo","var")]
-        class TestP(Resident):
-            M_NAME="TestP"
-            p_id=None
+        class TestP(Process):
+            p_id=None # Needed to make handle_message get called
             sup_id=None
             INTERVAL=0.1
             def setup(self_,finished):
                 self_.index=0
                 self_.finished=finished
+
+            def op(self_):
+                while not self_.finished:
+                    time.sleep(self_.poll_time)
 
             def handle_message(self_, m):
                 self.assertLess(self_.index,len(messages))
@@ -644,16 +582,60 @@ class TestResident(unittest.TestCase):
 
         finished=multiprocessing.Event()
         tp=TestP(finished)
+        tp.set_poll(self.tick)
         (this,that)=multiprocessing.Pipe()
         tp.set_pipe(that)
         tp.start()
         for m in messages:
             this.send(m)
+        tp.join(self.tick*2)
+        self.assertFalse(tp.is_alive())
+        self.assertTrue(finished.is_set())
+        if this.poll():
+            # Sent an exception?
+            self.assertTrue(False,str(this.recv()))
+
+    def test_op(self):
+        class badP(Process):
+            def op(self):
+                self.val.set()
+
+        tp=badP()
+        tp.val=multiprocessing.Event()
+        tp.start()
+        tp.join()
+        self.assertTrue(tp.val.is_set())
+
+        class testP(Process):
+            def op(self_):
+                time.sleep(self.tick*2)
+
+        tp=testP()
+        start=time.time()
+        tp.start()
+        tp.join()
+        self.assertGreaterEqual(time.time()-start,self.tick)
+
+class TestResident(unittest.TestCase):
+    def test_handle_message(self):
+        class TestP(Resident):
+            p_id=None # Needed to make handle_message get called
+            sup_id=None
+
+        start=time.time()
+        tp=TestP()
+        (this,that)=multiprocessing.Pipe()
+        tp.set_pipe(that)
+        tp.INTERVAL=time.time()-start
+        tp.start()
+        self.assertTrue(tp.is_alive())
+        this.send(multitools.ipc.ResidentTermMessage(None))
+        time.sleep(tp.poll_time*4)
+        self.assertFalse(tp.is_alive())
         tp.join()
         if this.poll():
             print(this.recv())
             self.assertTrue(False, 'Process sent a message (maybe an exception?')
-        self.assertTrue(finished.is_set())
 
 if __name__=='__main__':
     unittest.main()
