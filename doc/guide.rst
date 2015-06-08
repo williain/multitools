@@ -5,11 +5,17 @@ Multitools guide
 Introduction
 ============
 
+One of the limitations of Python as it currently stands is that it uses a
+global interpreter lock to ensure it only does one thing at a time (its
+operations are atomic).  However, this means on newer multi-core machines,
+a python instance will only run on one core.  If you want to use all your
+cores, you'll need to run multiple instances of python in parallel.
+
 Python has a fairly comprehensive set of multiprocessing libraries to help
-you run multiple processes in parallel and collect the results.  Multitools
-is based on those libraries, and aims to make your life easier especially
-if you need the processes to work together. It adds the following features
-to the standard libs:
+you run multiple processes in parallel and a set of types so you can collect
+the results.  Multitools is based on those libraries, and aims to make your
+life easier especially if you need the processes to work together. It adds
+the following features to the standard libs:
 
 - Simpler argument passing to process objects
 
@@ -17,7 +23,7 @@ to the standard libs:
 
 - A supervisor object which gives you:
 
-  - Automatic connections to allow you to pass picklable objects out
+  - Automatic data connections to allow you to pass picklable objects out
     (rather than having to use multiprocessing.Value)
 
   - A messaging system letting you pass data between concurrent processes
@@ -47,7 +53,8 @@ library, so it's worth going back to looking at how to use that::
     print "Result", val.value
 
 The above is a simple example of how you can run code in a separate process,
-using dummy code that wouldn't actually be any quicker to run in parallel.
+that wouldn't actually be any quicker to run in parallel.  You'd need to
+start and join two processes to get any useful parallelism.
 
 You can also derive your own process from multiprocessing.Process, so you
 don't need to pass those target and args arguments.  You'll need to pass
@@ -66,7 +73,7 @@ Replace the definition of op() with this class declaration::
         def run(self):
             self.result.value = self.arg_one * self.arg_two
 
-You can instantiate yor object now using easier argument passing::
+You can instantiate your object now using easier argument passing::
 
     p = MyProcess( val, 1234, 5678 )
 
@@ -121,28 +128,28 @@ Introducing ipc.client.Process
 ------------------------------
 You can declare these Process objects and instantiate them like this::
 
-    class MyProcess(multitools.ipc.client.Process):
-        M_NAME = None
+    import multitools.ipc.client
+    import multiprocessing
 
+    class MyProcess(multitools.ipc.client.Process):
         def setup(self, result, arg_one, arg_two):
             self.result = result
             self.arg_one = arg_one
             self.arg_two = arg_two
 
-        def op():
+        def op(self):
             self.result.value = self.arg_one * self.arg_two
 
+    val = multiprocessing.Value('i',0)
     p = MyProcess( val, 1234, 5678 )
+    p.start()
+    p.join()
+    print "Result:", val.value
 
-multitools.ipc.client.Process inherits from multiprocessing.Process, so it
-works in much the same way althogh note that your arguments get sent to a
-setup() method, and you do your work in an op() method again. 
-
-Note the M_NAME constant defined (as None) above.  That's just there to
-prevent a warning output by the Process constructor.  As its name suggests,
-it's designed to be used to give it a name, which is important if you want to
-send it a message from outside.  But for now we can just ignore the warning,
-so we suppress it by delaring it as any value, such as None.
+multitools.ipc.client.Process works in much the same way as
+multiprocessing.Process, although note that your arguments get sent to a
+setup() method (so you don't need to write your own constructor) and you
+do your work in an op() method again. 
 
 Introducing ipc.host.Supervisor
 -------------------------------
@@ -166,7 +173,7 @@ Introducing ipc.host.Supervisor
     val = multiprocessing.Value('i', 0)
     s.add( MyProcess(val, 1234, 5678) )
     s.supervise()
-    print "Result", val.value
+    print "Result:", val.value
 
 multitools.ipc.host.Supervisor is a type of ProcessList, so it's just like
 using one of those.  In this example, using the supervisor just means calling
@@ -188,13 +195,12 @@ print operator, when you're using the supervisor::
     import multitools.ipc.client, multitools.ipc.host
 
     class MyProcess(multitools.ipc.client.Process):
-        M_NAME = "My process"
         def setup(self, arg_one, arg_two):
             self.arg_one = arg_one
             self.arg_two = arg_two
 
         def op(self):
-            self.prnt("Result", self.arg_one * self.arg_two)
+            self.prnt("Result:", self.arg_one * self.arg_two)
 
     s = multitools.ipc.host.Supervisor()
     s.add( MyProcess(1234, 5678) )
@@ -225,7 +231,7 @@ print handler to the supervisor e.g. ::
     s.supervise( prntHandler=myPrntHandler )
 
 Add this to the previous code example (replacing the supervisor() call with
-this one), and this now prints 'CAUGHT Result 7006652'.
+this one), and this now prints 'CAUGHT Result: 7006652'.
 
 This mechanism could be used for a simplified form of debug logging, or
 progress logging.
@@ -240,7 +246,6 @@ objHandler named argument::
     from multitools.ipc.host import Supervisor
 
     class MyProcess(Process):
-        M_NAME='My process'
         def setup(self, arg_one, arg_two):
             self.arg_one = arg_one
             self.arg_two = arg_two
@@ -249,7 +254,7 @@ objHandler named argument::
             self.send_object(self.arg_one * self.arg_two)
 
     def myObjHandler(m):
-        print "Result", m
+        print "Result:", m
 
     s = Supervisor()
     s.add( MyProcess(1234, 5678) )
@@ -257,15 +262,23 @@ objHandler named argument::
 
 The ipc.Process class has a method called send_object which will send any
 object you pass back to the supervisor.  Without an object handler, the
-supervisor will throw an exception on receiving an unrecognised object.
+supervisor will throw an exception on receiving an unrecognised object::
+
+    ERROR: Supervisor; Invalid message received;
+      7006652:
+      Unknown object sent to supervisor: 7006652
 
 Supply an object handler (objHandler) though, and that callable will be
-called with the object that was sent every time.
+called with the object that was sent every time, and in this case will
+print out the result rather than an error::
 
-Note we've now got rid of having to import multiprocessing to use a Value
-object, we can just use any serialisable object now (an int in this case).
+    Result: 7006652
+
+Note that even though we're now passing the value out of the subprocess,
+we've got rid of having to import multiprocessing to use a Value object,
+we can just use any serialisable object now (an int in this case).
 You can still use multiprocessing.Value if you want a value you can pass
-around and modify from anywhere, but it's unnecessary if you just want
+around and modify from any subprocess, but it's unnecessary if you just want
 to get a value out.
 
 ipc.client.Process.inpt()
@@ -281,11 +294,16 @@ other words it's a blocking call that returns the user input.
 If you want a prompt, you can pass it as an argument::
 
     class MyProcess(multitools.ipc.client.Process):
+        M_NAME='My process'
         ...
         def op(self):
             ...
             name = self.inpt( "Enter your name:" )
             ...
+
+See how we've now had to give the process a M_NAME, to name the process for
+the supervisor, because the supervisor needs to have a name for the process
+that asked for input so that it can reply once the user's entered their data.
 
 Note in the present version, inpt will still stop other processes
 communicating with each other while it blocks for input.
@@ -319,7 +337,7 @@ target process that should receive the message::
 
     message = EmptyMessage( "target_id" )
 
-In practive, you'll rarely instantiate an empty message, unless you subclass
+In practice, you'll rarely instantiate an empty message, unless you subclass
 it to give it a type that you can use as an event notifier.  Other message
 types take arguments, such as StringMessage::
 
@@ -328,14 +346,14 @@ types take arguments, such as StringMessage::
 Process ids
 -----------
 
-Every process added to a host.Supervisor gets a process id (p_id)::
+Every named process added to a host.Supervisor gets a process id (p_id)::
 
     from multitools.ipc.client import Process
     from multitools.ipc.host import Supervisor
     import time
 
     class MyProcessOne(Process):
-        M_NAME = None
+        M_NAME = "Process one"
 
         def op(self):
             time.sleep(1)
@@ -410,6 +428,13 @@ It's right; MyProcessOne will have terminated, because it reached the end of
 it's op() before the message could be sent to it.  Put the 'time.sleep(1)'
 statement back and the example will work again.
 
+Be aware that a return code of False from your handle_message function is
+treated as a signal to terminate the process.  If you want to stop the process
+because the message received indicates no more work is to be done, just return
+False.  If an error has occurred, but you don't want to use an exception, you
+can display a message then return False - this will kill your process, but
+leave others running, unlike raising an exception.
+
 multitools.ipc.client.Process.get_ids()
 ---------------------------------------
 
@@ -457,7 +482,8 @@ you to put all you need to send a message within the sending process::
     s.supervise()
 
 See how outside of the function calls, we just instantiate the supervisor, add
-the processes to it, and supervise them.
+the processes to it, and supervise them.  No need to go poking around inside
+MyProcessOne to get its id to pass to MyProcessTwo this way round.
 
 Note that get_ids doesn't throw an exception in the case it can't find any
 matching process ids; it will return the empty set.  In this example you'd
@@ -495,20 +521,19 @@ The supervisor can be very busy to begin with as all processes are asking for
 their first ids, so it may make sense to get your request in early.  If the
 supervisor replies, that message will be cached so that if you later call
 get_ids() in normal blocking mode when you want to send a message, it can
-return the ids immediately (else wait until the message does come).
+return the ids immediately (else it will block until the supervisor replies).
 
 That looks like this::
 
     def op(self):
-        self.get_ids("Process two", timeout=0) # Ask supervisor for ids
+        self.get_ids("Process two", block=False) # Prep the supervisor for ids
         ...
 
     def handle_message(self, m):
         if isinstance(m, ipc.StringMessage):
             # Use the cached ids, if available
             self.send(self.get_ids("Process two"), ipc.StringMessage, str(m))
-        elif isinstance(m, QuitMessage):
-            self.running = False
+        elif ...
 
 Exception Handling
 ------------------
@@ -595,8 +620,9 @@ of that, such as multitools.ipc.InptResponseMessage) or FileMessage.  That's
 even if they weren't sent to your process.
 
 That can be used to extend event behaviours when modifying your project.  You
-have two processes which communicate, but by listening to their messages you
-can add behaviours without modifying their code.
+have two pre-existing processes which communicate, but by adding a third
+process which listens to their messages you can add behaviours without
+modifying the original two processes.
 
 It's also a way to design your project from the start, when used with the
 LISTENERS meta-target defined in multitools.ipc.host.Supervisor.  Send it
@@ -612,9 +638,8 @@ to receive it, you'll need to catch and deal with that exception.
 BROADCAST messages
 ------------------
 
-Broadcast messages are those sent to all processes, or at least all processes
-that can receive messages.  It's just a process id like any other, and just
-as easy to use::
+Broadcast messages are those sent to all named processes.  It's just used as a
+process id like any other, and just as easy to use::
 
     self.send_message( multitools.ipc.host.Supervisor.BROADCAST, EmptyMessage )
 
