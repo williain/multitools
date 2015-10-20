@@ -18,7 +18,9 @@ def diff(localpath,installpath):
                 return False
         elif fil.endswith('.py'):
             installfil=os.path.join(installpath,fil)
-            if os.path.getsize(localfil) != os.path.getsize(installfil):
+            if not os.path.exists(installfil):
+                return False
+            elif os.path.getsize(localfil) != os.path.getsize(installfil):
                 return False
             else:
                 lfil=open(localfil)

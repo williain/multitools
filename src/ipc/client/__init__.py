@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 from __future__ import print_function
 
-import sys, multiprocessing, traceback, collections
+import sys
+import multiprocessing
+import traceback
+import collections
 try:
     import queue
 except ImportError:
@@ -79,6 +82,8 @@ class Process(object):
                 self.process.terminate()
 
         self.thread=threading.Thread(target=stopperThread,args=[self],name='Stopper')
+        self.inptlock=threading.Lock()
+        self.idslock=threading.Lock()
         self.process.start()
         self.thread.start()
 
@@ -150,6 +155,29 @@ class Process(object):
         if len(target_ids)==0:
             raise IndexError("{0} not sent to no targets! Args:{1}".format(m_type.__name__, str(args)))
 
+    def get_lock(self):
+        '''
+        Get a threading lock you can use in your handle_message()
+        implementation and your op() to make sure you don't write data at
+        the same time as you're trying to read it.
+
+        In your setup() implementation, use this and save the lock returned
+        for later, e.g. ::
+            def setup(self):
+                self.lock=self.get_lock()
+
+            def op(self):
+                with self.lock:
+                    ...get data...
+                ...use data...
+
+            def handle_message(self,message):
+                if isinstance(message, MyMessageType):
+                    with self.lock:
+                        ...set data...
+        '''
+        return threading.Lock()
+
     def prnt(self, *args):
         '''
         Replacement for the print operator that causes messages to be
@@ -171,14 +199,21 @@ class Process(object):
         '''
         if not hasattr(self, 'p_id'):
             raise ClientException('Must set M_NAME and be added to a supervisor before calling inpt()')
-        self.inptactive=True
+        with self.inptlock:
+            self.inptactive=True
         self.send_object(
           multitools.ipc.InputMessage(self.sup_id,self.p_id,prompt)
         )
-        while self.inptactive:
-            time.sleep(self.poll_time)
-        r=self.inptresponse
-        self.inptresponse=None
+        while True:
+            with self.inptlock:
+                waiting=self.inptactive
+            if waiting:
+                time.sleep(self.poll_time)
+            else:
+                break
+        with self.inptlock:
+            r=self.inptresponse
+            self.inptresponse=None
         return r
 
     def get_ids(self, name, block=True):
@@ -208,18 +243,25 @@ class Process(object):
         '''
         if not hasattr(self, 'p_id'):
             raise ClientException('Must set M_NAME and be added to a supervisor to use get_ids()')
-        if not name in self.ids:
+        with self.idslock:
+            gotname=name in self.ids
+        if not gotname:
             self.send_object(
                 multitools.ipc.GetIdsMessage(self.sup_id, self.p_id, name)
             )
-            self.queries.append(name)
+            with self.idslock:
+                self.queries.append(name)
             if block==False:
                 return set()
             else:
-                while not name in self.ids:
+                while not gotname:
                     time.sleep(self.poll_time)
+                    with self.idslock:
+                        gotname=name in self.ids
 
-        return self.ids[name]
+        with self.idslock:
+            ids=self.ids[name]
+        return ids
 
     def __wrap_op(self):
         if not hasattr(self,'p_id'):
@@ -271,8 +313,9 @@ class Process(object):
     def __handle_message(self, m):
         if isinstance(m, multitools.ipc.IdsReplyMessage):
             try:
-                name=self.queries.popleft()
-                self.ids[name]=m.ids
+                with self.idslock:
+                    name=self.queries.popleft()
+                    self.ids[name]=m.ids
             except IndexError:
                 raise ClientException(
                   "{0}: IdsReplyMessage received for no query".format(
@@ -280,14 +323,15 @@ class Process(object):
                   )
                 )
         elif isinstance(m, multitools.ipc.InputResponseMessage):
-            if self.inptactive:
-                self.inptresponse=m.message
-                self.inptactive=False
-            else:
-                raise ClientException(
-                  '{0}: InputResponse received unexpectedly: '+
-                  "message '{1}'".format(self.p_id, m.message)
-                )
+            with self.inptlock:
+                if self.inptactive:
+                    self.inptresponse=m.message
+                    self.inptactive=False
+                else:
+                    raise ClientException(
+                      '{0}: InputResponse received unexpectedly: '+
+                      "message '{1}'".format(self.p_id, m.message)
+                    )
         elif isinstance(m, multitools.ipc.ResidentTermMessage) and hasattr(self,'RESIDENT') and self.RESIDENT:
             # We're out of here!
             return False
@@ -358,7 +402,9 @@ class Resident(Process):
 
 ### Test code ############################################################
 
-import unittest, time
+import unittest
+import time
+import multiprocessing.sharedctypes
 
 class FakeMessage(object):
     def __init__(self, target, val):
@@ -417,6 +463,49 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(m.target, 1234)
         self.assertEqual(m.val,"value")
 
+    '''
+    def test_get_lock(self):
+        class TestP(Process):
+            p_id=None
+            sup_id=None
+            def setup(self, failed, count):
+                self.lock=self.get_lock()
+                self.failed=failed
+                self.count=count
+
+            def op(self_):
+                with self_.lock:
+                    if self_.count.value!=0:
+                        print("ERROR: Op lock not gained first!")
+                        self_.failed.set()
+                    else:
+                        self_.count.value+=1
+                        time.sleep(self.tick*4)
+
+            def handle_message(self, m):
+                with self.lock:
+                    if self.count.value!=1:
+                        print("ERROR: Handle message lock not gained after op lock!")
+                        self.failed.set()
+                    else:
+                        self.count.value+=1
+                pass
+
+        failed=multiprocessing.Event()
+        count=multiprocessing.sharedctypes.Value('b')
+        count.value=0
+        tp=TestP(failed,count)
+        tp.set_poll(self.tick)
+        (this, that)=multiprocessing.Pipe()
+        tp.set_pipe(that)
+        tp.start()
+        this.send("message")
+        tp.join()
+        with tp.lock:
+            self.assertFalse(failed.is_set())
+            self.assertEqual(count.value, 2, "Test did not complete")
+''' # Disabled due to segfaulting, in about 4/5 runs!
+
     def test_prnt(self):
         class TestP(Process):
             sup_id='supervisor'
@@ -449,15 +538,16 @@ class TestProcess(unittest.TestCase):
         self.assertIs(type(m),multitools.ipc.InputMessage,str(m))
         self.assertEqual(m.prompt, 'Test prompt')
         this.send(multitools.ipc.InputResponseMessage(m.source,'Test response'))
-        self.assertFalse(this.poll())
         tp.join(self.tick*5)
+        while this.poll():
+            self.assertFalse(True, this.recv())
         self.assertFalse(tp.is_alive())
 
-        class NoIpP(Process):
+        class NoIdP(Process):
             def op(self_):
                 self.assertRaises(ClientException, self_.inpt)
 
-        tp=NoIpP()
+        tp=NoIdP()
         tp.start()
         tp.join(self.tick*5)
         self.assertFalse(tp.is_alive())
@@ -483,7 +573,7 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(this.recv().name,"Test name")
         this.send(multitools.ipc.IdsReplyMessage("test id",set(["1234"]) ))
         tp.join(self.tick)
-        time.sleep(self.tick*2)
+        time.sleep(self.tick*3)
         self.assertFalse(tp.is_alive())
         self.assertTrue(this.poll())
         m=this.recv()
@@ -540,9 +630,10 @@ class TestProcess(unittest.TestCase):
         p.start()
         self.assertEqual(this.recv().message,'Started')
         p.terminate()
-        #p.join(self.tick*2)
-        time.sleep(self.tick*20)
-        self.assertFalse(p.is_alive())
+        start=time.time()
+        while p.is_alive() and time.time()-start<self.tick*20:
+            time.sleep(self.tick)
+        self.assertLessEqual(time.time()-start,self.tick*15)
 
         # TODO
         # # Test process can be restarted
@@ -559,28 +650,37 @@ class TestProcess(unittest.TestCase):
             p_id=None # Needed to make handle_message get called
             sup_id=None
             INTERVAL=0.1
-            def setup(self_,finished):
-                self_.index=0
-                self_.finished=finished
+            def setup(self,finished,failed):
+                self.index=0
+                self.finished=finished
+                self.failed=failed
 
-            def op(self_):
-                while not self_.finished:
-                    time.sleep(self_.poll_time)
+            def op(self):
+                while not self.finished:
+                    time.sleep(self.poll_time)
 
-            def handle_message(self_, m):
-                self.assertLess(self_.index,len(messages))
-                if isinstance(m, FakeMessage):
-                    self.assertEqual(messages[self_.index].target,m.target)
-                    self.assertEqual(messages[self_.index].val,m.val)
+            def handle_message(self, m):
+                if self.index >= len(messages):
+                    print("ERROR: Received too many messages; expected {0}, got {1}".format(len(messages),self.index+1))
+                    self.failed.set()
                 else:
-                    self.assertEqual(messages[self_.index],m)
-                self_.index+=1
-                if self_.index>=len(messages):
-                    self_.finished.set()
-                    return False
+                    expected=messages[self.index]
+                    if isinstance(m, FakeMessage):
+                        if expected.target!=m.target or expected.val!=m.val:
+                            print("ERROR: Unexpected message; expected '{0}' to {1}, got '{2}' to {3}".format(expected.val, expected.target, m.val, m.target))
+                            self.failed.set()
+                    else:
+                        if expected != m:
+                            print("ERROR: Unexpected message; expected '{0}' got '{1}'".format(str(expected),str(m)))
+                            self.failed.set()
+                    self.index += 1
+                    if self.index == len(messages):
+                        self.finished.set()
+                        return False
 
         finished=multiprocessing.Event()
-        tp=TestP(finished)
+        failed=multiprocessing.Event()
+        tp=TestP(finished,failed)
         tp.set_poll(self.tick)
         (this,that)=multiprocessing.Pipe()
         tp.set_pipe(that)
@@ -595,6 +695,7 @@ class TestProcess(unittest.TestCase):
         if this.poll():
             # Sent an exception?
             self.assertTrue(False,str(this.recv()))
+        self.assertFalse(failed.is_set())
 
     def test_op(self):
         class badP(Process):
